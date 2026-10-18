@@ -15,6 +15,9 @@ function drawFoliage(g, r, w, h) {
     const shade = (v) => { const c = Math.round(255 * Math.min(1, v)); return `rgb(${c},${c},${c})`; };
     g.strokeStyle = shade(0.42); g.lineWidth = lw * 1.5;
     g.beginPath(); g.moveTo(bx, by); g.quadraticCurveTo(cx, cy, tx, ty); g.stroke();
+    // 主脉高光：近景草叶的一条亮脊
+    g.strokeStyle = shade(0.82); g.lineWidth = lw * 0.55;
+    g.beginPath(); g.moveTo(bx, by); g.quadraticCurveTo(cx + 1, cy, tx, ty); g.stroke();
     const nodes = 7 + Math.floor(r() * 6);
     for (let k = 1; k <= nodes; k++) {
       const p = k / (nodes + 0.5), ip = 1 - p;
@@ -45,7 +48,7 @@ function drawFoliage(g, r, w, h) {
   }
 }
 
-export function makeFoliageAtlas(variants = 4, size = 512) {
+export function makeFoliageAtlas(variants = 6, size = 512) {
   const c = canvas(size * variants, size);
   const g = c.getContext('2d');
   for (let v = 0; v < variants; v++) {

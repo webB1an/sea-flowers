@@ -34,12 +34,12 @@ class Builder {
   }
 }
 
-// 三片 60° 交叉的竖直面片，每片 6 段，便于弯曲
-function grassCardGeometry() {
+// 三片 60° 交叉的竖直面片，每片 seg 段，便于弯曲；seg=8 用于近景高细节草
+function grassCardGeometry(seg = 6) {
   const b = new Builder();
   for (let i = 0; i < 3; i++) {
     const a = (i * Math.PI) / 3, c = Math.cos(a), s = Math.sin(a);
-    b.grid(2, 6, (u, t) => ({ p: [(u - 0.5) * c, t, (u - 0.5) * s], n: [-s, 0, c] }), 0);
+    b.grid(2, seg, (u, t) => ({ p: [(u - 0.5) * c, t, (u - 0.5) * s], n: [-s, 0, c] }), 0);
   }
   return b.build();
 }
@@ -169,6 +169,7 @@ function instanced(base, attrs, count) {
 // ---------------- 着色器 ----------------
 const GRASS_VS = /* glsl */ `
 ${COMMON}
+uniform float uVariants;
 attribute vec3 iPos;
 attribute vec4 iData;   // 宽, 高, 朝向, 图集变体
 attribute vec2 iData2;  // 色调, 相位
@@ -178,7 +179,8 @@ varying vec4 vShadowCoord;
 void main() {
   float s = position.y;
   float cy = cos(iData.z), sy = sin(iData.z);
-  vec3 lp = vec3(position.x * iData.x, position.y * iData.y, position.z * iData.x);
+  float taper = mix(1.0, 0.3, s * s);              // 叶尖收窄，避免矩形纸片轮廓
+  vec3 lp = vec3(position.x * iData.x * taper, position.y * iData.y, position.z * iData.x * taper);
   lp = vec3(cy * lp.x - sy * lp.z, lp.y, sy * lp.x + cy * lp.z);
   vec2 disp = windDisp(iPos.xz, iData2.y, iData.y);
   float bend = pow(s, 1.6);
@@ -189,7 +191,7 @@ void main() {
   vec3 sph = normalize(vec3(lp.x, (s - 0.3) * iData.y, lp.z) + vec3(0.0, 0.001, 0.0));
   vN = normalize(mix(nr, sph, 0.65));
   vShadowCoord = uShadowMatrix * vec4(wp + vN * 0.02, 1.0);
-  vUv = vec2((uv.x + iData.w) / 4.0, uv.y);
+  vUv = vec2((uv.x + iData.w) / uVariants, uv.y);
   vS = s; vTint = iData2.x; vWorld = wp;
   vShadow = cloudShadowAt(wp);
   vGust = gust(iPos.xz);
@@ -220,6 +222,7 @@ void main() {
   vec4 fog = clamp(vFog, 0.0, 8.0); fog.a = min(fog.a, 1.0);
   float L = tx.r;
   vec3 albedo = mix(uDark, uLight, clamp(L * 0.9 + vTint * 0.4 - 0.2 + vGust * 0.06, 0.0, 1.0));
+  albedo = mix(albedo, vec3(0.21, 0.25, 0.05), smoothstep(0.6, 1.0, vTint) * 0.28);  // 枯黄/暖调草丛
   albedo *= mix(1.0, 0.78, uWet);
   float ao = mix(0.18, 1.0, smoothstep(0.05, 0.95, S));
   vec3 V = normalize(cameraPosition - vWorld);
@@ -390,20 +393,31 @@ ${SHADOW}
 varying vec3 vWorld;
 varying vec4 vShadowCoord;
 void main() {
-  float n = fbm3(vWorld.xz * 0.35) * 0.6 + fbm3(vWorld.xz * 0.02) * 0.4;
-  vec3 alb = mix(vec3(0.035, 0.07, 0.02), vec3(0.07, 0.11, 0.035), n);
+  // 土壤/草地混合：低频斑块 + 细碎枯叶/土粒 + 草根暗部
+  float n1 = fbm3(vWorld.xz * 0.7);
+  float n2 = fbm3(vWorld.xz * 0.09 + 11.0);
+  float n3 = fbm3(vWorld.xz * 0.013 + 3.0);
+  float fine = vnoise(vWorld.xz * 6.0), fine2 = vnoise(vWorld.xz * 23.0);
+  vec3 soil = mix(vec3(0.032, 0.026, 0.016), vec3(0.105, 0.078, 0.045), n2);
+  vec3 green = mix(vec3(0.030, 0.058, 0.016), vec3(0.088, 0.132, 0.042), n1);
+  float bare = smoothstep(0.5, 0.8, n2 + n3 * 0.5);
+  vec3 alb = mix(green, soil, bare * 0.82);
+  alb += (fine2 - 0.5) * 0.018;                                            // 土粒细碎明暗
+  alb = mix(alb, vec3(0.17, 0.12, 0.05), smoothstep(0.84, 0.96, fine) * 0.14); // 枯叶点
   alb *= mix(1.0, 0.7, uWet);
+  float dens = 0.5 + 0.5 * sin(vWorld.x * 0.14 + sin(vWorld.z * 0.09) * 2.2);
+  alb *= mix(0.62, 1.0, smoothstep(0.15, 0.85, dens * 0.55 + n1 * 0.45));   // 草根处更暗
   vec3 V = normalize(cameraPosition - vWorld);
   vec3 N = vec3(0.0, 1.0, 0.0);
   float vis = shadowVisibility(vShadowCoord, N);
-  vec3 col = shadePlant(alb, N, V, 0.45, 0.0, cloudShadowAt(vWorld) * vis, 0.95, 0.0);
+  vec3 col = shadePlant(alb, N, V, 0.42, 0.0, cloudShadowAt(vWorld) * vis, 0.95, 0.0);
   vec4 f = fogAt(vWorld);
   gl_FragColor = vec4(mix(col, f.rgb, f.a), 1.0);
 }`;
 
 function grassMaterial(U, tex, a2c, dark, light) {
   return new THREE.ShaderMaterial({
-    uniforms: { ...U, uAtlas: { value: tex.atlas }, uDark: { value: lin(dark) }, uLight: { value: lin(light) }, uA2C: { value: a2c ? 1 : 0 } },
+    uniforms: { ...U, uAtlas: { value: tex.atlas }, uDark: { value: lin(dark) }, uLight: { value: lin(light) }, uA2C: { value: a2c ? 1 : 0 }, uVariants: { value: 6 } },
     vertexShader: GRASS_VS, fragmentShader: GRASS_FS, side: THREE.DoubleSide, alphaToCoverage: a2c,
   });
 }
@@ -502,28 +516,56 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
     return false;
   };
 
-  // ---- 草丛 ----
+  // ---- 草丛：低频密度场 + 分簇分布（小径/空地由密度低值自然形成）----
   const nG = Math.round(q.grass * Math.max(0.2, cfg.grassDensity));
   const gPos = new Float32Array(nG * 3), gD = new Float32Array(nG * 4), gD2 = new Float32Array(nG * 2);
   // 阴影投射子集：近中景（0–26m）才有必要进 shadow map，限制数量控制 shadow pass 开销
   const SHADOW_GRASS_R = 0, SHADOW_GRASS_MAX = 0;
   const shG = { pos: [], d: [], d2: [] };
+  const densityAt = (x, z) => {
+    const n1 = Math.sin(x * 0.13 + Math.sin(z * 0.075) * 2.2) * 0.5 + 0.5;
+    const n2 = Math.sin(z * 0.19 - x * 0.055 + 1.7) * 0.5 + 0.5;
+    const n3 = Math.sin((x + z) * 0.045 + Math.cos(x * 0.021) * 3.0) * 0.5 + 0.5;
+    return Math.min(1, 0.22 + 0.78 * (n1 * 0.45 + n2 * 0.3 + n3 * 0.25));
+  };
+  const nCl = Math.max(220, Math.round(nG / 130));
+  const clumps = [];
+  for (let i = 0; i < nCl * 2.2 && clumps.length < nCl; i++) {
+    const s = sector(rng, 0.65, 210, halfH, 14);
+    const d = densityAt(s.x, s.z);
+    if (rng() > d) continue;
+    clumps.push({
+      x: s.x, z: s.z, r: 0.35 + rng() * 1.15,
+      hMul: 0.78 + rng() * 0.5, tint: 0.18 + d * 0.55 + rng() * 0.25,
+      phase: rng() * Math.PI * 2,
+    });
+  }
   let ng = 0;
   for (let i = 0; i < nG * 1.2 && ng < nG; i++) {
-    const s = sector(rng, 0.75, 230, halfH, 14);
-    let h = 0.5 + rng() * 0.45;
-    if (s.r < 2) h = Math.min(h, 0.5 + 0.15 * s.r); // 近处草丛低于视线，不遮挡画面
-    if (s.r > 60) h *= 1 + (s.r - 60) / 150;
-    for (let k = 0; k < 4 && blocksHero(s.x, h, s.z, s.r); k++) h *= 0.72;
-    if (blocksHero(s.x, h, s.z, s.r)) continue;
-    const w = h * (0.75 + rng() * 0.35), rot = rng() * Math.PI * 2, variant = Math.floor(rng() * 4);
-    gPos.set([s.x, 0, s.z], ng * 3);
+    let x, z, r;
+    const c = clumps.length && rng() > 0.06 ? clumps[(rng() * clumps.length) | 0] : null;
+    if (c) {
+      const a = rng() * Math.PI * 2, rad = Math.sqrt(rng()) * c.r;
+      x = c.x + Math.cos(a) * rad; z = c.z + Math.sin(a) * rad;
+      r = Math.hypot(x, z);
+      const th = Math.atan2(x, -z);
+      if (r < 0.45 || Math.abs(th) > halfH + 0.2) continue;
+    } else {
+      const s = sector(rng, 0.75, 230, halfH, 14);
+      x = s.x; z = s.z; r = s.r;
+    }
+    let h = (0.5 + rng() * 0.45) * (c ? c.hMul : 1);
+    if (r < 2) h = Math.min(h, 0.5 + 0.15 * r); // 近处草丛低于视线，不遮挡画面
+    for (let k = 0; k < 4 && blocksHero(x, h, z, r); k++) h *= 0.72;
+    if (blocksHero(x, h, z, r)) continue;
+    const w = h * (0.72 + rng() * 0.4), rot = rng() * Math.PI * 2, variant = Math.floor(rng() * 6);
+    gPos.set([x, 0, z], ng * 3);
     gD.set([w, h, rot, variant], ng * 4);
-    const n = Math.sin(s.x * 0.21 + Math.cos(s.z * 0.13) * 2.0) * 0.5 + 0.5;
-    const tint = n * 0.6 + rng() * 0.5, phase = rng() * Math.PI * 2;
+    const tint = c ? Math.min(1, Math.max(0, c.tint + (rng() - 0.5) * 0.22)) : rng();
+    const phase = c ? c.phase + (rng() - 0.5) * 0.9 : rng() * Math.PI * 2;
     gD2.set([tint, phase], ng * 2);
-    if (s.r <= SHADOW_GRASS_R && shG.pos.length < SHADOW_GRASS_MAX * 3) {
-      shG.pos.push(s.x, 0, s.z); shG.d.push(w, h, rot, variant); shG.d2.push(tint, phase);
+    if (r <= SHADOW_GRASS_R && shG.pos.length < SHADOW_GRASS_MAX * 3) {
+      shG.pos.push(x, 0, z); shG.d.push(w, h, rot, variant); shG.d2.push(tint, phase);
     }
     ng++;
   }
@@ -533,6 +575,30 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   );
   grass.frustumCulled = false;
   group.add(grass);
+
+  // ---- 近景高细节草（0–7.5m，8 段弯曲 + 更宽叶片，LOD 过渡）----
+  const nNear = Math.round((q.grassNear || 0) * Math.max(0.2, cfg.grassDensity));
+  let nearCount = 0;
+  if (nNear > 0) {
+    const nPos = new Float32Array(nNear * 3), nD = new Float32Array(nNear * 4), nD2 = new Float32Array(nNear * 2);
+    let nn = 0;
+    for (let i = 0; i < nNear * 1.5 && nn < nNear; i++) {
+      const s = sector(rng, 0.5, 6.0, halfH, 0);
+      const h = 0.36 + rng() * 0.34;
+      if (blocksHero(s.x, h, s.z, s.r)) continue;
+      nPos.set([s.x, 0, s.z], nn * 3);
+      nD.set([h * (0.72 + rng() * 0.34), h, rng() * Math.PI * 2, Math.floor(rng() * 6)], nn * 4);
+      nD2.set([rng(), rng() * Math.PI * 2], nn * 2);
+      nn++;
+    }
+    const near = new THREE.Mesh(
+      instanced(grassCardGeometry(7), { iPos: [nPos, 3], iData: [nD, 4], iData2: [nD2, 2] }, nn),
+      grassMaterial(U, tex, a2c, '#0f2108', '#57862a'),
+    );
+    near.frustumCulled = false;
+    group.add(near);
+    nearCount = nn;
+  }
 
   // ---- 花朵与花苞 ----
   const weights = ['white', 'pink', 'magenta', 'crimson'].map((k) => Math.max(0, +cfg.colorWeights[k] || 0));
@@ -618,7 +684,7 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
     const cluster = Math.pow(Math.sin(th * 9.0 + 1.3) * 0.5 + 0.5, 1.5) * 0.7 + Math.pow(Math.sin(th * 23.0) * 0.5 + 0.5, 3.0) * 0.5;
     const h = 3 + rng() * 5 + cluster * 14;
     tPos.set([Math.sin(th) * r, -0.5, -Math.cos(th) * r], i * 3);
-    tD.set([h * (1.0 + rng() * 0.6), h, rng() * 6.283, Math.floor(rng() * 4)], i * 4);
+    tD.set([h * (1.0 + rng() * 0.6), h, rng() * 6.283, Math.floor(rng() * 6)], i * 4);
     tD2.set([rng() * 0.5, rng() * 6.283], i * 2);
   }
   const tree = new THREE.Mesh(instanced(grassCardGeometry(), { iPos: [tPos, 3], iData: [tD, 4], iData2: [tD2, 2] }, nT),
@@ -644,5 +710,5 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   mkShadowMesh(flowerGeo, flAttrs(shF), shF.sway.length, flowerShadowMaterial(U, tex));
   mkShadowMesh(budGeo, flAttrs(shB), shB.sway.length, flowerShadowMaterial(U, tex));
 
-  return { group, shadowCasters, counts: { grass: ng, flowers: fl.sway.length, buds: bd.sway.length } };
+  return { group, shadowCasters, counts: { grass: ng, grassNear: nearCount, flowers: fl.sway.length, buds: bd.sway.length } };
 }
