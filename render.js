@@ -7,6 +7,9 @@
 //   node render.js --width 3840 --height 2160 --fps 60 --out flower-sea-4k.mp4
 //   node render.js --still 3 --out poster.png        （只渲染第 3 秒的静帧）
 //   node render.js --timeout 120                     （编码无进展超时，单位秒，默认 60）
+//   node render.js --start 60 --end 120              （断点续渲：只渲染帧序号 [start, end)，默认整段）
+//   node render.js --bench                           （输出每帧耗时 / Node RSS / 页面 heap 基准数据）
+//   node render.js --readback legacy                 （像素回读兼容模式：整帧 base64；默认分块回读）
 //   --chrome <路径>  指定 Chrome / Edge 可执行文件
 // 说明：宽高会自动向下取偶（H.264 要求偶数），上限 7680x4320；--fps 取整并限制在 1..120；
 //       视频会显式写入 BT.709 / TV range 色彩标签，PNG 静帧保持 RGB（pc/gbr）不变。
@@ -80,6 +83,22 @@ const timeoutRaw = opt('timeout', 60);
 const timeoutSec = +timeoutRaw;
 if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) die(`--timeout 必须是正数（秒），当前值：${timeoutRaw}`);
 const stallMs = Math.round(timeoutSec * 1000);
+
+// 像素回读模式：chunked（默认，分块 base64）| legacy（旧整帧 base64，用于对照/排障）
+const READBACK = opt('readback', 'chunked');
+if (READBACK !== 'chunked' && READBACK !== 'legacy') die(`--readback 只支持 chunked / legacy，当前值：${READBACK}`);
+const bench = has('bench');
+
+// 断点续渲：帧序号区间 [start, end)（仅视频）
+const startRaw = opt('start', null), endRaw = opt('end', null);
+if (stillRaw !== null && (startRaw !== null || endRaw !== null)) die('--start/--end 仅用于视频导出，不能与 --still 同时使用');
+const parseFrameIndex = (name, raw) => {
+  const n = +raw;
+  if (raw === null || !Number.isInteger(n) || n < 0) die(`--${name} 必须是非负整数（帧序号），当前值：${raw}`);
+  return n;
+};
+const rangeStart = startRaw === null ? 0 : parseFrameIndex('start', startRaw);
+const rangeEnd = endRaw === null ? null : parseFrameIndex('end', endRaw);
 
 function findChrome() {
   const p = opt('chrome', process.env.CHROME_PATH);
@@ -218,7 +237,13 @@ function startEncoder(outArgs, filter = 'vflip') {
     try { proc.kill('SIGKILL'); } catch (e) { /* ignore */ }
   }
 
-  return { write, finish, abort };
+  // 中止后等待子进程真正退出（Windows 上文件句柄释放前不能删除半成品）
+  async function waitClosed(ms) {
+    try { await withTimeout(closed, ms, () => new EncoderError('等待 ffmpeg 退出超时')); }
+    catch (e) { /* 仅用于清理，忽略 */ }
+  }
+
+  return { write, finish, abort, waitClosed };
 }
 
 function removePartialOutput(file) {
@@ -253,30 +278,84 @@ async function main() {
   const info = await page.evaluate((c, w, h) => window.FlowerSea.init(c, w, h), cfg, W, H);
   const period = info.period;
   console.log(`场景就绪 ${Date.now() - t0}ms：草丛 ${info.counts.grass}，花 ${info.counts.flowers}，花苞 ${info.counts.buds}；${cfg.timeMode === 'timelapse' ? '全天延时' : '时间 ' + cfg.hour}，天气 ${cfg.weather}`);
-  const frame = async (t) => Buffer.from(await page.evaluate((x) => window.FlowerSea.renderAt(x), t), 'base64');
+
+  // 像素回读：chunked 默认逐块取回（降低单条 CDP 消息/峰值内存）；legacy 为旧整帧 base64
+  async function grabFrame(t) {
+    if (READBACK === 'legacy') {
+      return Buffer.from(await page.evaluate((x) => window.FlowerSea.renderAt(x), t), 'base64');
+    }
+    const meta = await page.evaluate((x) => window.FlowerSea.renderFrame(x), t);
+    if (meta.width !== W || meta.height !== H) {
+      throw new Error(`页面画布尺寸 ${meta.width}x${meta.height} 与请求 ${W}x${H} 不一致`);
+    }
+    const parts = new Array(meta.chunks);
+    for (let i = 0; i < meta.chunks; i++) {
+      const b64 = await page.evaluate((idx) => window.FlowerSea.readChunk(idx), i);
+      parts[i] = Buffer.from(b64, 'base64');
+    }
+    const buf = Buffer.concat(parts, meta.bytes);
+    if (buf.length !== meta.bytes) throw new Error(`像素回读字节数不符：期望 ${meta.bytes}，实际 ${buf.length}`);
+    return buf;
+  }
 
   if (still !== null) {
     encoder = startEncoder(['-frames:v', '1', out]);
-    await encoder.write(await frame(+still));
+    await encoder.write(await grabFrame(still));
     await encoder.finish();
     console.log('已写入', out);
   } else {
     const frames = Math.round(period * fps);
-    // ipratio/pbratio=1 让关键帧与其余帧画质一致，避免循环接缝处画质跳变
-    // ipratio/pbratio=1 让关键帧与其余帧画质一致，避免循环接缝处画质跳变
+    const frameStart = rangeStart;
+    const frameEnd = rangeEnd === null ? frames : rangeEnd;
+    if (frameStart >= frameEnd) throw new Error(`--start/--end 范围无效：start=${frameStart}，end=${frameEnd}（视频共 ${frames} 帧，end 为开区间）`);
+    if (frameEnd > frames) throw new Error(`--end 超出视频帧数：end=${frameEnd}，共 ${frames} 帧`);
+    const total = frameEnd - frameStart;
     // x264 同步写入 BT.709 的 colorprim/transfer/colormatrix（部分 ffmpeg 版本不会从 CLI 标签自动写入 SPS VUI）
     encoder = startEncoder(['-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-tune', 'film',
       '-x264-params', `keyint=${fps * 5}:scenecut=0:ipratio=1.0:pbratio=1.0:colorprim=bt709:transfer=bt709:colormatrix=bt709`,
       '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
       ...COLOR_META_ARGS, out], VIDEO_FILTER);
-    const start = Date.now();
-    // 第 frames 帧 == 第 0 帧，因此只输出 [0, frames)，循环播放时无缝衔接
-    for (let i = 0; i < frames; i++) {
-      await encoder.write(await frame(i / fps));
-      if (i % fps === 0) process.stdout.write(`\r第 ${i}/${frames} 帧  ${((Date.now() - start) / (i + 1)).toFixed(0)}ms/帧`);
+    console.log(`开始渲染：${total} 帧（序号 ${frameStart}..${frameEnd - 1}，${W}x${H}@${fps}fps，回读 ${READBACK}）`);
+    const renderStart = Date.now();
+    const benchRows = [];
+    let nodeRssPeakMB = 0, pageHeapPeakMB = 0;
+    const sampleRss = () => +(process.memoryUsage().rss / 1048576).toFixed(1);
+    const sampleHeap = async () => {
+      try { return +((await page.metrics()).JSHeapUsedSize / 1048576).toFixed(1); } catch (e) { return null; }
+    };
+    for (let i = frameStart; i < frameEnd; i++) {
+      const fT0 = Date.now();
+      const buf = await grabFrame(i / fps);
+      const grabMs = Date.now() - fT0;
+      const wT0 = Date.now();
+      await encoder.write(buf);
+      const writeMs = Date.now() - wT0;
+      const done = i - frameStart + 1;
+      const elapsed = Date.now() - renderStart;
+      const avg = elapsed / done;
+      const eta = Math.max(0, ((total - done) * avg) / 1000);
+      process.stdout.write(`\r第 ${done}/${total} 帧（序号 ${i}，${((done / total) * 100).toFixed(1)}%）${grabMs + writeMs}ms/帧 已用 ${(elapsed / 1000).toFixed(1)}s ETA ${eta.toFixed(1)}s   `);
+      if (bench) {
+        const rssMB = sampleRss();
+        if (rssMB > nodeRssPeakMB) nodeRssPeakMB = rssMB;
+        const heapMB = await sampleHeap();
+        if (heapMB !== null && heapMB > pageHeapPeakMB) pageHeapPeakMB = heapMB;
+        benchRows.push({ frame: i, grabMs, writeMs, rssMB, heapMB });
+      }
     }
+    process.stdout.write('\n');
     await encoder.finish();
-    console.log(`\n完成 -> ${out}，用时 ${((Date.now() - start) / 1000).toFixed(1)}s`);
+    const totalSec = (Date.now() - renderStart) / 1000;
+    console.log(`完成 -> ${out}，用时 ${totalSec.toFixed(1)}s`);
+    if (bench) {
+      const avgOf = (key) => +(benchRows.reduce((s, r) => s + r[key], 0) / benchRows.length).toFixed(1);
+      console.log('[bench] ' + JSON.stringify({
+        readback: READBACK, width: W, height: H, fps, frames: total, range: [frameStart, frameEnd],
+        avgGrabMs: avgOf('grabMs'), avgWriteMs: avgOf('writeMs'),
+        avgFrameMs: +(avgOf('grabMs') + avgOf('writeMs')).toFixed(1),
+        nodeRssPeakMB, pageHeapPeakMB, totalSec: +totalSec.toFixed(1), perFrame: benchRows,
+      }));
+    }
   }
 }
 
@@ -290,6 +369,7 @@ async function main() {
     process.exitCode = 1;
     if (encoder) {
       encoder.abort();
+      await encoder.waitClosed(2000); // 等 ffmpeg 退出释放文件句柄后再清理，避免 Windows EPERM
       removePartialOutput(out);
     }
   } finally {

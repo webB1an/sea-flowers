@@ -41,6 +41,7 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 
 const TIME_MODES = ['clock', 'fixed', 'timelapse'];
 const WEATHER_MODES = [...WEATHERS, 'auto'];
+const QUALITY_MODES = [...Object.keys(QUALITY), 'auto'];   // auto：按 GPU/分辨率自动选档
 const HEX6 = /^#[0-9a-f]{6}$/i;
 // [最小值, 最大值]：非法/越界值会被钳制（与设置面板滑块范围一致）
 const CLAMPS = {
@@ -63,7 +64,7 @@ export function resolveConfig(o = {}) {
   for (const k of Object.keys(c)) if (!(k in DEFAULTS)) delete c[k];   // 丢弃未知键，避免污染配置
   if (!TIME_MODES.includes(c.timeMode)) c.timeMode = DEFAULTS.timeMode;
   if (!WEATHER_MODES.includes(c.weather)) c.weather = DEFAULTS.weather;
-  if (!QUALITY[c.quality]) c.quality = DEFAULTS.quality;
+  if (!QUALITY_MODES.includes(c.quality)) c.quality = DEFAULTS.quality;
   c.hour = Number.isFinite(+c.hour) ? (((+c.hour % 24) + 24) % 24) : DEFAULTS.hour;
   for (const [k, range] of Object.entries(CLAMPS)) c[k] = clampNum(c[k], range, DEFAULTS[k]);
   c.seed = Math.max(0, Math.floor(+c.seed) || 0);

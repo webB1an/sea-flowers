@@ -10,6 +10,7 @@ import { createParticles } from './particles.js';
 import { Post } from './post.js';
 import { initUI } from './ui.js';
 import { createFrameScheduler } from './scheduler.js';
+import { detectQuality, createAutoQualityMonitor } from './quality.js';
 
 const lin = (hex) => new THREE.Color(hex);
 const MOON_DIR = new THREE.Vector3(-0.42, 0.42, -0.8).normalize();
@@ -35,6 +36,13 @@ export class App {
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     this.renderer.setPixelRatio(1);
     this.renderer.autoClear = false;
+    this.gpuName = (() => {   // 自动画质依据（ANGLE 包装后的 GPU 名称）
+      try {
+        const gl = this.renderer.getContext();
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+      } catch (e) { return ''; }
+    })();
     this.overlay = new THREE.Scene();
     this.tex = { atlas: makeFoliageAtlas(), petal: makePetalTexture(), wing: makeWingTexture() };
     for (const t of Object.values(this.tex)) t.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
@@ -46,6 +54,8 @@ export class App {
     this.post = null;
     this.wCur = null;
     this.envCache = new Map();
+    this.autoQuality = null;      // quality='auto' 时启动检测出的生效档位
+    this.effectiveQuality = null; // 当前实际渲染使用的档位（UI/状态展示用）
     this.w = 1; this.h = 1;
   }
 
@@ -53,6 +63,7 @@ export class App {
     this.w = w; this.h = h;
     this.renderer.setSize(w, h, false);
     if (this.post) this.post.setSize(w, h);
+    if (this.cfg && this.cfg.quality === 'auto') this.autoQuality = null; // 分辨率变化后重新检测
     this.needsBuild = true;
   }
 
@@ -60,12 +71,30 @@ export class App {
     const cfg = resolveConfig(cfgIn);
     const prev = this.cfg;
     this.cfg = cfg;
+    if (prev && prev.quality !== cfg.quality) this.autoQuality = null;   // 切换手动/自动档时重新检测
     if (!prev || STRUCTURAL_KEYS.some((k) => JSON.stringify(prev[k]) !== JSON.stringify(cfg[k]))) this.needsBuild = true;
     const names = ['white', 'pink', 'magenta', 'crimson'];
     names.forEach((n, i) => {
       const [b, m, t] = palette(n, cfg.colors[n]);
       this.U.uPalBase.value[i].set(b.r, b.g, b.b); this.U.uPalMid.value[i].set(m.r, m.g, m.b); this.U.uPalTip.value[i].set(t.r, t.g, t.b);
     });
+  }
+
+  // 解析生效画质：手动档直接返回；auto 按 GPU/分辨率检测；导出模式固定 high 保证可复现
+  resolveQualityName() {
+    const quality = this.cfg && this.cfg.quality;
+    if (quality !== 'auto') return QUALITY[quality] ? quality : 'high';
+    if (this.exportMode) return 'high';
+    if (!this.autoQuality) this.autoQuality = detectQuality(this.gpuName, this.w, this.h);
+    return this.autoQuality;
+  }
+
+  // 自动画质运行时降档（仅 quality='auto' 生效）
+  useAutoTier(tier) {
+    if (!this.cfg || this.cfg.quality !== 'auto' || !QUALITY[tier] || this.autoQuality === tier) return false;
+    this.autoQuality = tier;
+    this.needsBuild = true;
+    return true;
   }
 
   updateCamera() {
@@ -82,7 +111,10 @@ export class App {
 
   build() {
     this.needsBuild = false;
-    const cfg = this.cfg, q = QUALITY[cfg.quality];
+    const cfg = this.cfg;
+    const qualityName = this.resolveQualityName();
+    const q = QUALITY[qualityName];
+    this.effectiveQuality = qualityName;
     if (!this.post || this.post.samples !== q.samples || this.postTaps !== q.dofTaps) {
       if (this.post) this.post.dispose();
       this.post = new Post(this.renderer, q);
@@ -216,8 +248,29 @@ export class App {
 }
 
 // ---------------- 导出接口（render.js 通过无界面浏览器调用） ----------------
+// 像素回读有两套接口：
+//   renderAt(t)            旧接口：整帧 base64（保留用于对照 / 外部脚本 / 排障）
+//   renderFrame(t)+readChunk(i)  分块回读：4MB 原始像素/块，逐块 base64 传回，降低单条 CDP 消息与峰值内存
+const EXPORT_CHUNK_BYTES = 4 * 1024 * 1024;
+function bytesToBase64(bytes) {
+  // Chrome 133+ 提供原生 Uint8Array.prototype.toBase64，比手工 fromCharCode + btoa 快很多
+  if (typeof bytes.toBase64 === 'function') return bytes.toBase64();
+  let s = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return btoa(s);
+}
+
 function exportAPI() {
-  let app = null, canvas = null;
+  let app = null, canvas = null, pixels = null;
+  function renderPixels(t) {
+    app.frame(t);
+    const gl = app.renderer.getContext();
+    const bytes = app.w * app.h * 4;
+    if (!pixels || pixels.length !== bytes) pixels = new Uint8Array(bytes);
+    gl.readPixels(0, 0, app.w, app.h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    return bytes;
+  }
   return {
     init(cfg, w, h) {
       canvas = document.getElementById('c');
@@ -230,6 +283,7 @@ function exportAPI() {
       return { period: app.cfg.period, counts: app.counts };
     },
     debugTexture(name) { return app.tex[name].image.toDataURL('image/png'); },
+    // 兼容旧接口：整帧 base64（旧实现，保持不变，供 --readback legacy 基准对照）
     renderAt(t) {
       app.frame(t);
       const gl = app.renderer.getContext();
@@ -239,6 +293,21 @@ function exportAPI() {
       const CH = 0x8000;
       for (let i = 0; i < px.length; i += CH) s += String.fromCharCode.apply(null, px.subarray(i, i + CH));
       return btoa(s);
+    },
+    // 分块回读：渲染一帧并缓存像素，返回元信息；随后用 readChunk(i) 逐块取回
+    renderFrame(t) {
+      const bytes = renderPixels(t);
+      return {
+        width: app.w, height: app.h, bytes,
+        chunkBytes: EXPORT_CHUNK_BYTES, chunks: Math.ceil(bytes / EXPORT_CHUNK_BYTES),
+      };
+    },
+    readChunk(index) {
+      if (!pixels) throw new Error('readChunk: 尚未调用 renderFrame');
+      if (!Number.isInteger(index) || index < 0) throw new Error(`readChunk: 非法块序号 ${index}`);
+      const start = index * EXPORT_CHUNK_BYTES;
+      if (start >= pixels.length) throw new Error(`readChunk: 块序号越界 ${index}`);
+      return bytesToBase64(pixels.subarray(start, Math.min(start + EXPORT_CHUNK_BYTES, pixels.length)));
     },
   };
 }
@@ -258,7 +327,9 @@ function live() {
   const ui = initUI({
     onConfig: (cfg) => { if (app) app.setConfig(cfg); },
     onView: () => resize(),
-    getStatus: () => (app ? { ...app.status, counts: app.counts, size: [app.w, app.h] } : { counts: null, size: [innerWidth, innerHeight] }),
+    getStatus: () => (app
+      ? { ...app.status, counts: app.counts, size: [app.w, app.h], quality: app.effectiveQuality, auto: !!(app.cfg && app.cfg.quality === 'auto') }
+      : { counts: null, size: [innerWidth, innerHeight], quality: null, auto: false }),
   });
 
   function resize() {
@@ -298,12 +369,22 @@ function live() {
   const start = performance.now();
   let prevT = start;
   const shouldRender = createFrameScheduler();
+  const autoMonitor = createAutoQualityMonitor();
   (function loop(now) {
     requestAnimationFrame(loop);
     if (fatal || contextLost || !app) return;
     if (!shouldRender(now, +ui.view.fpsCap)) return;
-    app.frame((now - start) / 1000, Math.min(0.25, (now - prevT) / 1000));
+    const dt = Math.min(0.25, (now - prevT) / 1000);
+    app.frame((now - start) / 1000, dt);
     prevT = now;
+    // 低帧率自动降档：仅 auto 档；用户主动限帧到 30fps 以下时不算“性能不足”
+    if (app.cfg.quality === 'auto' && app.effectiveQuality) {
+      const cap = +ui.view.fpsCap;
+      if (!(cap > 0 && cap < 30)) {
+        const nextTier = autoMonitor(dt, app.effectiveQuality);
+        if (nextTier) app.useAutoTier(nextTier);
+      }
+    }
     ui.tick(now);
   })(start);
 }

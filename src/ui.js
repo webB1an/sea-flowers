@@ -49,7 +49,7 @@ const SCHEMA = [
     { key: 'fireflies', label: '萤火虫', min: 0, max: 3, step: 0.1 },
   ] },
   { group: '画质', items: [
-    { key: 'quality', label: '画质档位', type: 'select', options: [['low', '低（集成显卡）'], ['medium', '中'], ['high', '高'], ['ultra', '极高']] },
+    { key: 'quality', label: '画质档位', type: 'select', options: [['auto', '自动（按性能）'], ['low', '低（集成显卡）'], ['medium', '中'], ['high', '高'], ['ultra', '极高']] },
     { key: 'scale', view: true, label: '渲染分辨率', type: 'select', options: [['auto', '自动（跟随屏幕）'], ['0.5', '0.5× 省电'], ['0.75', '0.75×'], ['1', '1×'], ['1.5', '1.5×'], ['2', '2× 高清']] },
     { key: 'fpsCap', view: true, label: '帧率上限', type: 'select', options: [['24', '24 fps'], ['30', '30 fps'], ['60', '60 fps'], ['0', '不限']] },
     { key: 'showFps', view: true, label: '显示帧率', type: 'check' },
@@ -198,7 +198,7 @@ export function initUI({ onConfig, onView, getStatus }) {
     // 视频需要确定的时间与天气：跟随时钟 / 自动天气时，取当前值
     if (data.timeMode === 'clock') { data.timeMode = 'fixed'; data.hour = Math.round(st.hour * 100) / 100; }
     if (data.weather === 'auto') data.weather = st.weather;
-    if (data.quality === 'low') data.quality = 'high'; // 视频离线渲染，不必省性能
+    if (data.quality === 'low' || data.quality === 'auto') data.quality = 'high'; // 离线导出固定高画质、结果可复现
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const a = el('a', { href: URL.createObjectURL(blob), download: 'flower-sea.config.json' });
     document.body.append(a); a.click(); a.remove();
@@ -227,17 +227,18 @@ export function initUI({ onConfig, onView, getStatus }) {
   };
 
   let fpsN = 0, fpsT = performance.now(), lastStatus = 0;
+  const qualityLabel = (st) => (st.quality ? ` · 画质 ${st.quality}${cfg.quality === 'auto' ? '（自动）' : ''}` : '');
   function tick(now) {
     fpsN++;
     if (now - fpsT > 500) {
       const st = getStatus();
-      fpsEl.textContent = `${Math.round((fpsN * 1000) / (now - fpsT))} fps · ${st.size[0]}×${st.size[1]} · 草 ${st.counts?.grass} 花 ${st.counts?.flowers}`;
+      fpsEl.textContent = `${Math.round((fpsN * 1000) / (now - fpsT))} fps · ${st.size[0]}×${st.size[1]} · 草 ${st.counts?.grass} 花 ${st.counts?.flowers}${qualityLabel(st)}`;
       fpsN = 0; fpsT = now;
     }
     if (now - lastStatus > 1000) {
       lastStatus = now;
       const st = getStatus();
-      if (st.hour !== undefined) statusEl.textContent = `${hhmm(st.hour)} · ${WEATHER_NAMES[st.weather] || ''}${cfg.weather === 'auto' ? '（自动）' : ''}`;
+      if (st.hour !== undefined) statusEl.textContent = `${hhmm(st.hour)} · ${WEATHER_NAMES[st.weather] || ''}${cfg.weather === 'auto' ? '（自动）' : ''}${qualityLabel(st)}`;
     }
   }
   return state;
