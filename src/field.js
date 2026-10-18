@@ -185,7 +185,7 @@ void main() {
   vec3 n0 = normalize(vN + vec3(0.0, 1e-4, 0.0));
   vec3 N = gl_FrontFacing ? n0 : vec3(-n0.x, n0.y, -n0.z);
   sh *= shadowVisibility(vShadowCoord, N);
-  vec3 col = shadePlant(albedo, N, V, ao, 0.55 * S * S, sh);   // 叶尖逆光透亮
+  vec3 col = shadePlant(albedo, N, V, ao, 0.55 * S * S, sh, 0.8, 0.0);   // 叶尖逆光透亮
   col = mix(col, fog.rgb, fog.a);
   gl_FragColor = vec4(col, a);
 }`;
@@ -269,7 +269,7 @@ void main() {
   vec4 vFogC = clamp(vFog, 0.0, 8.0); vFogC.a = min(vFogC.a, 1.0);
   vec3 col; float a = 1.0;
   if (vPart < 0.5) {               // 茎
-    col = shadePlant(vec3(0.13, 0.24, 0.05), N, V, 0.85, 0.8, sunVis);
+    col = shadePlant(vec3(0.13, 0.24, 0.05), N, V, 0.85, 0.8, sunVis, 0.85, 0.08);
   } else if (vPart < 1.5) {        // 花瓣
     vec4 tx = texture2D(uPetal, vUv);
     a = tx.a;
@@ -291,9 +291,10 @@ void main() {
     float edgeT = mix(1.25, 1.0, smoothstep(0.3, 0.8, tx.g));
     float trans = pow(max(dot(-V, L), 0.0), 3.0) * veinT * edgeT * layer * near;
     vec3 sun = uLightColor * sunVis * (diff * 0.8 + trans * 1.1);
-    vec3 amb = mix(uGroundAmb, uSkyAmb, N.y * 0.5 + 0.5) * mix(0.75, 1.0, layer);
+    vec3 amb = plantAmbient(N, mix(0.75, 1.0, layer));
     col = alb * back * (sun + amb);
     col += uSkyAmb * alb * pow(1.0 - abs(dot(N, V)), 3.0) * 0.35;           // 掠射角的柔光
+    col += alb * plantSpecEnv(N, V, 0.35, 0.3);                              // 花瓣边缘环境反光
   } else if (vPart < 2.5) {        // 花心：密集的管状小花 + 突出的深色花药
     vec2 q = (vUv - 0.5) * 5.0;                // 约 ±1
     float rr = length(q);
@@ -303,14 +304,14 @@ void main() {
     float anther = smoothstep(0.72, 0.9, cells2) * smoothstep(0.25, 0.6, rr);
     alb = mix(alb, vec3(0.05, 0.03, 0.01), anther);
     alb *= mix(0.6, 1.0, smoothstep(1.05, 0.7, rr));                            // 边缘阴影
-    col = shadePlant(alb, N, V, 0.85, 0.15, sunVis);
+    col = shadePlant(alb, N, V, 0.85, 0.15, sunVis, 0.65, 0.22);
   } else if (vPart < 3.5) {        // 花苞
     int bi = int(vCi + 0.5);
     vec3 lo = bi == 0 ? vec3(0.28, 0.01, 0.06) : (bi == 1 ? vec3(0.12, 0.22, 0.05) : vec3(0.72, 0.42, 0.36));
     vec3 hi = bi == 0 ? vec3(0.62, 0.06, 0.2) : (bi == 1 ? vec3(0.5, 0.62, 0.22) : vec3(0.98, 0.85, 0.76));
-    col = shadePlant(mix(lo, hi, smoothstep(0.1, 0.95, vUv.y)), N, V, 0.9, 0.25 * (1.0 - vFogC.a), sunVis);
+    col = shadePlant(mix(lo, hi, smoothstep(0.1, 0.95, vUv.y)), N, V, 0.9, 0.25 * (1.0 - vFogC.a), sunVis, 0.8, 0.12);
   } else {                         // 萼片
-    col = shadePlant(vec3(0.12, 0.25, 0.06), N, V, 0.85, 0.5, sunVis);
+    col = shadePlant(vec3(0.12, 0.25, 0.06), N, V, 0.85, 0.5, sunVis, 0.85, 0.06);
   }
   col = min(col, vec3(8.0));
   col = mix(col, vFogC.rgb, vFogC.a);
@@ -339,7 +340,7 @@ void main() {
   vec3 V = normalize(cameraPosition - vWorld);
   vec3 N = vec3(0.0, 1.0, 0.0);
   float vis = shadowVisibility(vShadowCoord, N);
-  vec3 col = shadePlant(alb, N, V, 0.45, 0.0, cloudShadowAt(vWorld) * vis);
+  vec3 col = shadePlant(alb, N, V, 0.45, 0.0, cloudShadowAt(vWorld) * vis, 0.95, 0.0);
   vec4 f = fogAt(vWorld);
   gl_FragColor = vec4(mix(col, f.rgb, f.a), 1.0);
 }`;
@@ -448,7 +449,7 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   const nG = Math.round(q.grass * Math.max(0.2, cfg.grassDensity));
   const gPos = new Float32Array(nG * 3), gD = new Float32Array(nG * 4), gD2 = new Float32Array(nG * 2);
   // 阴影投射子集：近中景（0–26m）才有必要进 shadow map，限制数量控制 shadow pass 开销
-  const SHADOW_GRASS_R = 12, SHADOW_GRASS_MAX = 4000;
+  const SHADOW_GRASS_R = 0, SHADOW_GRASS_MAX = 0;
   const shG = { pos: [], d: [], d2: [] };
   let ng = 0;
   for (let i = 0; i < nG * 1.2 && ng < nG; i++) {

@@ -13,6 +13,10 @@ uniform mat4 uShadowMatrix;
 uniform vec2 uShadowTexel;
 uniform float uShadowBias, uShadowEnabled;
 
+// 天空 IBL（M1）
+uniform samplerCube uEnvMap;
+uniform float uEnvIntensity;
+
 #define CLOUD_H 1600.0
 const vec2 WIND_DIR = vec2(0.94, -0.34);
 `;

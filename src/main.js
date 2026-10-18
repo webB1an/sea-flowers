@@ -56,6 +56,10 @@ export class App {
     this.shadowCenter = new THREE.Vector3(0, 0, -3);
     this.shadowMatrix = new THREE.Matrix4();
     this.shadowCasters = null;
+    // 天空 IBL（M1）：cubemap 环境光/反射
+    this.iblRT = null;
+    this.iblScene = new THREE.Scene();
+    this.iblCamera = null;
     this.cfg = null;
     this.world = null;
     this.post = null;
@@ -129,6 +133,10 @@ export class App {
       this.shadowCasters = null;
     }
     this.shadowScene.clear();
+    // IBL 资源随场景/画质重建而释放（cubemap 会在新 build 中重新生成）
+    if (this.iblRT) { this.iblRT.dispose(); this.iblRT = null; }
+    this.iblCamera = null;
+    this.iblScene.clear();
     if (!this.post || this.post.samples !== q.samples || this.postTaps !== q.dofTaps) {
       if (this.post) this.post.dispose();
       this.post = new Post(this.renderer, q);
@@ -184,6 +192,25 @@ export class App {
     } else {
       this.shadowCasters = [];
     }
+
+    // ---- 天空 IBL：把 sky shader 渲染到 cubemap，作为环境光/环境反射来源 ----
+    const iblSize = q.ibl || 0;
+    this.U.uEnvIntensity.value = 0;
+    this.U.uEnvMap.value = null;
+    if (iblSize) {
+      const rt = new THREE.WebGLCubeRenderTarget(iblSize, {
+        type: THREE.HalfFloatType,
+        generateMipmaps: true,
+        minFilter: THREE.LinearMipmapLinearFilter,
+        magFilter: THREE.LinearFilter,
+      });
+      this.iblRT = rt;
+      this.iblCamera = new THREE.CubeCamera(0.1, 20000, rt);
+      this.iblCamera.position.copy(this.camera.position);
+      this.iblScene.add(sky.mesh.clone());   // 共享 geometry/material；uniforms 与主天空同源
+      this.U.uEnvMap.value = rt.texture;
+      this.U.uEnvIntensity.value = 0.5;      // 其余 10% 用解析环境光兜底，避免整体偏亮/偏色
+    }
   }
 
   // 阴影贴图渲染：方向光正交相机覆盖近中景；主场景 shader 通过 uShadowMap/uShadowMatrix 采样
@@ -201,6 +228,16 @@ export class App {
     r.clear();
     r.render(this.shadowScene, cam);
     r.setRenderTarget(null);
+  }
+
+  // 天空 IBL：每帧把 sky 渲染进 cubemap（64²×6 像素，代价很低；low 档不创建 IBL）
+  updateIBL() {
+    const r = this.renderer;
+    const prevAuto = r.autoClear;
+    r.autoClear = true;
+    this.iblCamera.position.copy(this.camera.position);
+    this.iblCamera.update(r, this.iblScene);
+    r.autoClear = prevAuto;
   }
 
   // 显式释放场景/贴图/后期/渲染器资源（页面销毁或需要彻底重建时使用）
@@ -221,6 +258,9 @@ export class App {
       this.shadowCasters = null;
     }
     this.shadowScene.clear();
+    if (this.iblRT) { this.iblRT.dispose(); this.iblRT = null; }
+    this.iblCamera = null;
+    this.iblScene.clear();
     this.overlay.clear();
     for (const t of Object.values(this.tex)) t.dispose();
     if (this.post) { this.post.dispose(); this.post = null; }
@@ -298,6 +338,8 @@ export class App {
 
     // 阴影 pass 必须在主场景渲染前完成（uShadowMatrix/uShadowMap 供接收材质采样）
     if (this.shadowRT) this.renderShadow(e.lightDir);
+    // IBL 依赖当前天空/光照 uniform，必须在环境参数更新之后、主场景渲染之前重建
+    if (this.iblRT) this.updateIBL();
 
     const k = this.h / 1080;
     this.post.render(this.scene, this.camera, {

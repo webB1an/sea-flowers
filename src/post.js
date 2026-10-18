@@ -140,10 +140,12 @@ void main() {
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = max(mix(vec3(l), c, uSat) * uTint, 0.0);
   c = toSRGB(aces(c * 0.9));
+  // 电影感收尾（M1）：去饱和 + 高光滚降后的柔和对比；暗角/颗粒收敛，避免插画感
+  c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, 0.94);
   c = (c - 0.5) * uContrast + 0.5;
   vec2 q = (vUv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
-  c *= mix(1.0, smoothstep(1.25, 0.35, length(q) * 1.15), 0.42);
-  c += (hash(vUv * uRes + uSeed) - 0.5) * 0.035 * uGrain;
+  c *= mix(1.0, smoothstep(1.25, 0.35, length(q) * 1.15), 0.28);
+  c += (hash(vUv * uRes + uSeed) - 0.5) * 0.022 * uGrain;
   c += (hash(vUv * uRes + 17.0) - 0.5) / 255.0;
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;

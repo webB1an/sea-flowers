@@ -94,9 +94,12 @@ src/main.js        App 装配、每帧管线、exportAPI
 | 1920×1080 high | 5.62 ms | 177.9 | 10,191,625 | 26 | 15 | 19 |
 | 3840×2160 high | 12.79 ms | 78.2 | 10,191,625 | 26 | 15 | 19 |
 | 1920×1080 high + M1 阴影 | 6.57 ms | 152.1 | 10,475,019 | 29 | 17 | 21 |
-| 增量（阴影） | **+17.0%**（预算 ≤20%） | | +283k | +3 | +2 | +2 |
+| 1920×1080 high + M1 阴影 + IBL | 6.73 ms | 148.5 | 10,358,451 | 34 | 16 | 22 |
+| 增量（阴影+IBL） | **+19.8%**（预算 阴影≤20%+IBL≤15%） | | +167k | +8 | +1 | +3 |
 
-> M1 阴影实现：2048² depth map、正交相机覆盖相机前方约 24m、2×2 PCF、近景草/花/花苞子集投射（约 280k 三角）、边缘淡出；low 档关闭、medium 1024。
+> M1 阴影实现：2048² depth map、正交相机覆盖相机前方约 24m、2×2 PCF、近景花/花苞子集投射（约 150k 三角）、边缘淡出；low 档关闭、medium 1024。
+> M1 IBL：sky→64² cubemap（medium 32 / ultra 128），环境光/反射接入 `shadePlant`；IBL 增量约 +0.16ms（+2.8%）。
+> 已知取舍：草叶投射阴影在 2048² 覆盖 24m 的分辨率下会出现模糊暗块，M1 暂只保留花/花苞投射；草层接触阴影交由 task-16 AO 补足。
 
 - 目标（待 M0 实测校准）：
 
@@ -179,8 +182,8 @@ src/main.js        App 装配、每帧管线、exportAPI
 | M0 计划与基线 | ✅ 完成 | 2026-10-18 | 本文件；基线截图/bench 已生成（§13） |
 | M0b 模块拆分 | ✅ 完成 | 2026-10-18 | task-13；8 张固定截图像素差 = 0，bench 5.576ms（基线 5.62ms） |
 | M1 方向光阴影（首版） | ✅ 完成 | 2026-10-18 | task-14；2048²/24m/2×2 PCF；bench 6.57ms（+17.0%）；smoke/导出通过；`capture --tag m1` |
-| M1 IBL + PBR 材质 | 待开始 | — | task-15 |
-| M1 SSAO/接触阴影 | 待开始 | — | task-16（补充花瓣层间/接触暗部） |
+| M1 IBL + PBR 材质 + 调色 | ✅ 完成 | 2026-10-18 | task-15；天空 cubemap IBL（64²）、简化 GGX/环境反射、去饱和/暗角/颗粒收敛；累计 bench 6.73ms（+19.8%）；smoke/导出通过 |
+| M1 SSAO/接触阴影 | 待开始 | — | task-16（补花瓣层间/草层接触暗部；改善草阴影后再考虑启回草投射） |
 | M1 光影 | 待开始 | — | task-14/15/16 |
 | M2 植物 | 待开始 | — | task-17/19 |
 | M3 天空/城市 | 待开始 | — | task-18/20 |
@@ -195,7 +198,8 @@ src/main.js        App 装配、每帧管线、exportAPI
 - 基线基线：1080p high **5.62ms / 177.9fps**，4K high **12.79ms / 78.2fps**；triangles 10.19M、26 draw calls、15 programs、19 textures
 - 基线截图 meta：`.review/realism/baseline/meta.json`（含 commit/场景配置/GPU）
 - M1 阴影对比：`capture --tag m1` → `.review/realism/m1/`；A/B 并排与逐像素数据在 `.review/realism/compare/baseline__m1/`；bench 在 `.review/realism/bench-m1.json`
-- 已知限制：英雄花自阴影/花瓣层间暗部受 2048²、24m 覆盖范围与强景深限制，先由 M1 AO（task-16）补足接触遮蔽；后续可按需加近景级联。
+- M1 IBL/材质/调色：同 tag `m1`（覆盖阴影版）；`bench-m1.json` 记录累计 6.73ms；IBL 增量约 +0.16ms
+- 已知限制：英雄花自阴影/花瓣层间暗部受 2048²、24m 覆盖范围与强景深限制，先由 M1 AO（task-16）补足接触遮蔽；草层投射在 M1 暂关闭（避免模糊暗块），待 AO/级联方案后再评估启回。
 - 验收命令：
   ```
   npm run capture -- --tag <milestone>          # 等价 node scripts/capture.cjs

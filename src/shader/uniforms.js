@@ -16,6 +16,7 @@ export function sharedUniforms() {
     uShadowMap: { value: null }, uShadowMatrix: { value: new THREE.Matrix4() },
     uShadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
     uShadowBias: { value: 0.0008 }, uShadowEnabled: { value: 0 },
+    uEnvMap: { value: null }, uEnvIntensity: { value: 0 },
     uPalBase: { value: [v3().value, v3().value, v3().value, v3().value] },
     uPalMid: { value: [v3().value, v3().value, v3().value, v3().value] },
     uPalTip: { value: [v3().value, v3().value, v3().value, v3().value] },
