@@ -7,6 +7,12 @@ uniform vec3 uLightDir, uLightColor, uSunDir, uGlowColor, uSkyAmb, uGroundAmb, u
 uniform float uFogDensity, uCloudCover, uCloudShadow, uWet;
 uniform vec2 uCloudDrift;
 
+// 方向光阴影（M1）
+uniform sampler2D uShadowMap;
+uniform mat4 uShadowMatrix;
+uniform vec2 uShadowTexel;
+uniform float uShadowBias, uShadowEnabled;
+
 #define CLOUD_H 1600.0
 const vec2 WIND_DIR = vec2(0.94, -0.34);
 `;

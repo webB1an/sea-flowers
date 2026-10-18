@@ -49,6 +49,13 @@ export class App {
     this.U = sharedUniforms();
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.05, 6000);
     this.scene = new THREE.Scene();
+    // 方向光阴影（M1）：正交光源相机覆盖近中景 0–40m
+    this.shadowRT = null;
+    this.shadowScene = new THREE.Scene();
+    this.shadowCamera = new THREE.OrthographicCamera(-12, 12, 12, -12, 1, 70);
+    this.shadowCenter = new THREE.Vector3(0, 0, -3);
+    this.shadowMatrix = new THREE.Matrix4();
+    this.shadowCasters = null;
     this.cfg = null;
     this.world = null;
     this.post = null;
@@ -115,6 +122,13 @@ export class App {
     const qualityName = this.resolveQualityName();
     const q = QUALITY[qualityName];
     this.effectiveQuality = qualityName;
+    // 阴影资源随画质/场景重建而释放
+    if (this.shadowRT) { if (this.shadowRT.depthTexture) this.shadowRT.depthTexture.dispose(); this.shadowRT.dispose(); this.shadowRT = null; }
+    if (this.shadowCasters) {
+      for (const m of this.shadowCasters) { m.geometry.dispose(); m.material.dispose(); }
+      this.shadowCasters = null;
+    }
+    this.shadowScene.clear();
     if (!this.post || this.post.samples !== q.samples || this.postTaps !== q.dofTaps) {
       if (this.post) this.post.dispose();
       this.post = new Post(this.renderer, q);
@@ -150,6 +164,43 @@ export class App {
     this.focus = cfg.heroes ? 0.92 : 3.5;
     this.world = world;
     this.scene.add(world);
+
+    // ---- 方向光阴影：仅近中景投射体进 shadow pass ----
+    const shadowSize = q.shadow || 0;
+    this.U.uShadowEnabled.value = shadowSize ? 1 : 0;
+    this.U.uShadowMap.value = null;
+    if (shadowSize) {
+      const depthTexture = new THREE.DepthTexture(shadowSize, shadowSize);
+      depthTexture.type = THREE.UnsignedIntType;
+      depthTexture.minFilter = THREE.NearestFilter;
+      depthTexture.magFilter = THREE.NearestFilter;
+      this.shadowRT = new THREE.WebGLRenderTarget(shadowSize, shadowSize, {
+        depthBuffer: true, depthTexture, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
+      });
+      this.U.uShadowMap.value = depthTexture;
+      this.U.uShadowTexel.value.set(1 / shadowSize, 1 / shadowSize);
+      this.shadowCasters = field.shadowCasters || [];
+      for (const m of this.shadowCasters) this.shadowScene.add(m);
+    } else {
+      this.shadowCasters = [];
+    }
+  }
+
+  // 阴影贴图渲染：方向光正交相机覆盖近中景；主场景 shader 通过 uShadowMap/uShadowMatrix 采样
+  renderShadow(lightDir) {
+    const cam = this.shadowCamera, center = this.shadowCenter;
+    cam.position.copy(center).addScaledVector(lightDir, 40);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(center);
+    cam.updateMatrixWorld();
+    cam.updateProjectionMatrix();
+    this.shadowMatrix.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    this.U.uShadowMatrix.value.copy(this.shadowMatrix);
+    const r = this.renderer;
+    r.setRenderTarget(this.shadowRT);
+    r.clear();
+    r.render(this.shadowScene, cam);
+    r.setRenderTarget(null);
   }
 
   // 显式释放场景/贴图/后期/渲染器资源（页面销毁或需要彻底重建时使用）
@@ -164,6 +215,12 @@ export class App {
     }
     if (this.rain) { this.rain.geometry.dispose(); this.rain.material.dispose(); }
     this.rain = null;
+    if (this.shadowRT) { if (this.shadowRT.depthTexture) this.shadowRT.depthTexture.dispose(); this.shadowRT.dispose(); this.shadowRT = null; }
+    if (this.shadowCasters) {
+      for (const m of this.shadowCasters) { m.geometry.dispose(); m.material.dispose(); }
+      this.shadowCasters = null;
+    }
+    this.shadowScene.clear();
     this.overlay.clear();
     for (const t of Object.values(this.tex)) t.dispose();
     if (this.post) { this.post.dispose(); this.post = null; }
@@ -238,6 +295,10 @@ export class App {
     const ru = this.rain.material.uniforms;
     ru.tDepth.value = this.post.scene.depthTexture; ru.uRes.value.set(this.w, this.h);
     ru.uNear.value = this.camera.near; ru.uFar.value = this.camera.far;
+
+    // 阴影 pass 必须在主场景渲染前完成（uShadowMatrix/uShadowMap 供接收材质采样）
+    if (this.shadowRT) this.renderShadow(e.lightDir);
+
     const k = this.h / 1080;
     this.post.render(this.scene, this.camera, {
       focus: this.focus, aperture: cfg.dof * 7 * k, maxCoc: 26 * k * Math.max(1, cfg.dof),

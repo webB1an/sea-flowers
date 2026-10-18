@@ -1,6 +1,7 @@
 // 花田：草丛（实例化交叉面片）、花朵 / 花苞（实例化几何体）、地面、远处树线
 import * as THREE from 'three';
 import { COMMON, LIGHTING } from './glsl.js';
+import { SHADOW } from './shader/index.js';
 
 const lin = (hex) => new THREE.Color(hex);
 
@@ -132,6 +133,7 @@ attribute vec4 iData;   // 宽, 高, 朝向, 图集变体
 attribute vec2 iData2;  // 色调, 相位
 varying vec2 vUv; centroid varying float vS, vTint, vShadow, vGust;
 centroid varying vec3 vN, vWorld; centroid varying vec4 vFog;
+varying vec4 vShadowCoord;
 void main() {
   float s = position.y;
   float cy = cos(iData.z), sy = sin(iData.z);
@@ -145,6 +147,7 @@ void main() {
   vec3 nr = vec3(cy * normal.x - sy * normal.z, 0.0, sy * normal.x + cy * normal.z);
   vec3 sph = normalize(vec3(lp.x, (s - 0.3) * iData.y, lp.z) + vec3(0.0, 0.001, 0.0));
   vN = normalize(mix(nr, sph, 0.65));
+  vShadowCoord = uShadowMatrix * vec4(wp + vN * 0.02, 1.0);
   vUv = vec2((uv.x + iData.w) / 4.0, uv.y);
   vS = s; vTint = iData2.x; vWorld = wp;
   vShadow = cloudShadowAt(wp);
@@ -156,11 +159,13 @@ void main() {
 const GRASS_FS = /* glsl */ `
 ${COMMON}
 ${LIGHTING}
+${SHADOW}
 uniform sampler2D uAtlas;
 uniform vec3 uDark, uLight;
 uniform float uA2C;
 varying vec2 vUv; centroid varying float vS, vTint, vShadow, vGust;
 centroid varying vec3 vN, vWorld; centroid varying vec4 vFog;
+varying vec4 vShadowCoord;
 void main() {
   vec4 tx = texture2D(uAtlas, vUv);
   float a = tx.a;
@@ -179,6 +184,7 @@ void main() {
   vec3 V = normalize(cameraPosition - vWorld);
   vec3 n0 = normalize(vN + vec3(0.0, 1e-4, 0.0));
   vec3 N = gl_FrontFacing ? n0 : vec3(-n0.x, n0.y, -n0.z);
+  sh *= shadowVisibility(vShadowCoord, N);
   vec3 col = shadePlant(albedo, N, V, ao, 0.55 * S * S, sh);   // 叶尖逆光透亮
   col = mix(col, fog.rgb, fog.a);
   gl_FragColor = vec4(col, a);
@@ -194,6 +200,7 @@ attribute vec4 iData;   // 茎高, 颜色序号, 相位, 自转
 attribute float iSway;
 varying vec2 vUv; varying float vPart, vCi, vPetalId; centroid varying float vShadow;
 centroid varying vec3 vN, vWorld; varying vec3 vBase, vMid, vTip; centroid varying vec4 vFog;
+varying vec4 vShadowCoord;
 void main() {
   float h = iData.x;
   vCi = iData.y;
@@ -235,6 +242,7 @@ void main() {
     wp = top + t2 * lp.x + f * lp.y + b2 * lp.z;
     N = normalize(t2 * nl.x + f * nl.y + b2 * nl.z);
   }
+  vShadowCoord = uShadowMatrix * vec4(wp + N * 0.015, 1.0);
   int ci = int(iData.y + 0.5);
   vBase = uPalBase[ci]; vMid = uPalMid[ci]; vTip = uPalTip[ci];
   vUv = uv; vPart = aPart; vN = N; vWorld = wp;
@@ -246,19 +254,22 @@ void main() {
 const FLOWER_FS = /* glsl */ `
 ${COMMON}
 ${LIGHTING}
+${SHADOW}
 uniform sampler2D uPetal;
 uniform float uA2C;
 varying vec2 vUv; varying float vPart, vCi, vPetalId; centroid varying float vShadow;
 centroid varying vec3 vN, vWorld; varying vec3 vBase, vMid, vTip; centroid varying vec4 vFog;
+varying vec4 vShadowCoord;
 void main() {
   vec3 V = normalize(cameraPosition - vWorld);
   vec3 n0 = normalize(vN + vec3(0.0, 1e-4, 0.0));
   vec3 N = gl_FrontFacing ? n0 : -n0;
   float vShadowC = clamp(vShadow, 0.0, 1.0);
+  float sunVis = vShadowC * shadowVisibility(vShadowCoord, N);
   vec4 vFogC = clamp(vFog, 0.0, 8.0); vFogC.a = min(vFogC.a, 1.0);
   vec3 col; float a = 1.0;
   if (vPart < 0.5) {               // 茎
-    col = shadePlant(vec3(0.13, 0.24, 0.05), N, V, 0.85, 0.8, vShadowC);
+    col = shadePlant(vec3(0.13, 0.24, 0.05), N, V, 0.85, 0.8, sunVis);
   } else if (vPart < 1.5) {        // 花瓣
     vec4 tx = texture2D(uPetal, vUv);
     a = tx.a;
@@ -279,7 +290,7 @@ void main() {
     float veinT = 0.25 + 0.75 * tx.r * tx.r;
     float edgeT = mix(1.25, 1.0, smoothstep(0.3, 0.8, tx.g));
     float trans = pow(max(dot(-V, L), 0.0), 3.0) * veinT * edgeT * layer * near;
-    vec3 sun = uLightColor * vShadowC * (diff * 0.8 + trans * 1.1);
+    vec3 sun = uLightColor * sunVis * (diff * 0.8 + trans * 1.1);
     vec3 amb = mix(uGroundAmb, uSkyAmb, N.y * 0.5 + 0.5) * mix(0.75, 1.0, layer);
     col = alb * back * (sun + amb);
     col += uSkyAmb * alb * pow(1.0 - abs(dot(N, V)), 3.0) * 0.35;           // 掠射角的柔光
@@ -292,14 +303,14 @@ void main() {
     float anther = smoothstep(0.72, 0.9, cells2) * smoothstep(0.25, 0.6, rr);
     alb = mix(alb, vec3(0.05, 0.03, 0.01), anther);
     alb *= mix(0.6, 1.0, smoothstep(1.05, 0.7, rr));                            // 边缘阴影
-    col = shadePlant(alb, N, V, 0.85, 0.15, vShadowC);
+    col = shadePlant(alb, N, V, 0.85, 0.15, sunVis);
   } else if (vPart < 3.5) {        // 花苞
     int bi = int(vCi + 0.5);
     vec3 lo = bi == 0 ? vec3(0.28, 0.01, 0.06) : (bi == 1 ? vec3(0.12, 0.22, 0.05) : vec3(0.72, 0.42, 0.36));
     vec3 hi = bi == 0 ? vec3(0.62, 0.06, 0.2) : (bi == 1 ? vec3(0.5, 0.62, 0.22) : vec3(0.98, 0.85, 0.76));
-    col = shadePlant(mix(lo, hi, smoothstep(0.1, 0.95, vUv.y)), N, V, 0.9, 0.25 * (1.0 - vFogC.a), vShadowC);
+    col = shadePlant(mix(lo, hi, smoothstep(0.1, 0.95, vUv.y)), N, V, 0.9, 0.25 * (1.0 - vFogC.a), sunVis);
   } else {                         // 萼片
-    col = shadePlant(vec3(0.12, 0.25, 0.06), N, V, 0.85, 0.5, vShadowC);
+    col = shadePlant(vec3(0.12, 0.25, 0.06), N, V, 0.85, 0.5, sunVis);
   }
   col = min(col, vec3(8.0));
   col = mix(col, vFogC.rgb, vFogC.a);
@@ -309,17 +320,26 @@ void main() {
 const GROUND_VS = /* glsl */ `
 ${COMMON}
 varying vec3 vWorld;
-void main() { vWorld = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0); }`;
+varying vec4 vShadowCoord;
+void main() {
+  vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+  vShadowCoord = uShadowMatrix * vec4(vWorld + vec3(0.0, 0.01, 0.0), 1.0);
+  gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+}`;
 const GROUND_FS = /* glsl */ `
 ${COMMON}
 ${LIGHTING}
+${SHADOW}
 varying vec3 vWorld;
+varying vec4 vShadowCoord;
 void main() {
   float n = fbm3(vWorld.xz * 0.35) * 0.6 + fbm3(vWorld.xz * 0.02) * 0.4;
   vec3 alb = mix(vec3(0.035, 0.07, 0.02), vec3(0.07, 0.11, 0.035), n);
   alb *= mix(1.0, 0.7, uWet);
   vec3 V = normalize(cameraPosition - vWorld);
-  vec3 col = shadePlant(alb, vec3(0.0, 1.0, 0.0), V, 0.45, 0.0, cloudShadowAt(vWorld));
+  vec3 N = vec3(0.0, 1.0, 0.0);
+  float vis = shadowVisibility(vShadowCoord, N);
+  vec3 col = shadePlant(alb, N, V, 0.45, 0.0, cloudShadowAt(vWorld) * vis);
   vec4 f = fogAt(vWorld);
   gl_FragColor = vec4(mix(col, f.rgb, f.a), 1.0);
 }`;
@@ -328,6 +348,35 @@ function grassMaterial(U, tex, a2c, dark, light) {
   return new THREE.ShaderMaterial({
     uniforms: { ...U, uAtlas: { value: tex.atlas }, uDark: { value: lin(dark) }, uLight: { value: lin(light) }, uA2C: { value: a2c ? 1 : 0 } },
     vertexShader: GRASS_VS, fragmentShader: GRASS_FS, side: THREE.DoubleSide, alphaToCoverage: a2c,
+  });
+}
+
+// ---- 阴影投射材质：复用同一套顶点着色器（风/实例化一致），只做 alpha cutout 后写深度 ----
+const GRASS_SHADOW_FS = /* glsl */ `
+uniform sampler2D uAtlas;
+varying vec2 vUv;
+void main() {
+  if (texture2D(uAtlas, vUv).a < 0.45) discard;
+  gl_FragColor = vec4(1.0);
+}`;
+const FLOWER_SHADOW_FS = /* glsl */ `
+uniform sampler2D uPetal;
+varying vec2 vUv;
+varying float vPart;
+void main() {
+  if (vPart > 0.5 && vPart < 1.5 && texture2D(uPetal, vUv).a < 0.5) discard;
+  gl_FragColor = vec4(1.0);
+}`;
+function grassShadowMaterial(U, tex) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...U, uAtlas: { value: tex.atlas } },
+    vertexShader: GRASS_VS, fragmentShader: GRASS_SHADOW_FS, side: THREE.DoubleSide,
+  });
+}
+function flowerShadowMaterial(U, tex) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...U, uPetal: { value: tex.petal } },
+    vertexShader: FLOWER_VS, fragmentShader: FLOWER_SHADOW_FS, side: THREE.DoubleSide,
   });
 }
 
@@ -398,6 +447,9 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   // ---- 草丛 ----
   const nG = Math.round(q.grass * Math.max(0.2, cfg.grassDensity));
   const gPos = new Float32Array(nG * 3), gD = new Float32Array(nG * 4), gD2 = new Float32Array(nG * 2);
+  // 阴影投射子集：近中景（0–26m）才有必要进 shadow map，限制数量控制 shadow pass 开销
+  const SHADOW_GRASS_R = 12, SHADOW_GRASS_MAX = 4000;
+  const shG = { pos: [], d: [], d2: [] };
   let ng = 0;
   for (let i = 0; i < nG * 1.2 && ng < nG; i++) {
     const s = sector(rng, 0.75, 230, halfH, 14);
@@ -406,10 +458,15 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
     if (s.r > 60) h *= 1 + (s.r - 60) / 150;
     for (let k = 0; k < 4 && blocksHero(s.x, h, s.z, s.r); k++) h *= 0.72;
     if (blocksHero(s.x, h, s.z, s.r)) continue;
+    const w = h * (0.75 + rng() * 0.35), rot = rng() * Math.PI * 2, variant = Math.floor(rng() * 4);
     gPos.set([s.x, 0, s.z], ng * 3);
-    gD.set([h * (0.75 + rng() * 0.35), h, rng() * Math.PI * 2, Math.floor(rng() * 4)], ng * 4);
+    gD.set([w, h, rot, variant], ng * 4);
     const n = Math.sin(s.x * 0.21 + Math.cos(s.z * 0.13) * 2.0) * 0.5 + 0.5;
-    gD2.set([n * 0.6 + rng() * 0.5, rng() * Math.PI * 2], ng * 2);
+    const tint = n * 0.6 + rng() * 0.5, phase = rng() * Math.PI * 2;
+    gD2.set([tint, phase], ng * 2);
+    if (s.r <= SHADOW_GRASS_R && shG.pos.length < SHADOW_GRASS_MAX * 3) {
+      shG.pos.push(s.x, 0, s.z); shG.d.push(w, h, rot, variant); shG.d2.push(tint, phase);
+    }
     ng++;
   }
   const grass = new THREE.Mesh(
@@ -432,6 +489,18 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   const nB = Math.round(nF * 0.35);
   const fl = { pos: [], head: [], data: [], sway: [] };
   const bd = { pos: [], head: [], data: [], sway: [] };
+  // 阴影投射子集（近中景花/花苞；英雄花总是包含）
+  const shF = { pos: [], head: [], data: [], sway: [] };
+  const shB = { pos: [], head: [], data: [], sway: [] };
+  const SHADOW_FLOWER_R = 12, SHADOW_FLOWER_MAX = 1200, SHADOW_BUD_R = 12, SHADOW_BUD_MAX = 600;
+  const copyLast = (src, dst) => {
+    const i = src.sway.length - 1;
+    if (i < 0) return;
+    dst.pos.push(...src.pos.slice(i * 3, i * 3 + 3));
+    dst.head.push(...src.head.slice(i * 4, i * 4 + 4));
+    dst.data.push(...src.data.slice(i * 4, i * 4 + 4));
+    dst.sway.push(src.sway[i]);
+  };
   const push = (o, p, head, data, sway) => { o.pos.push(...p); o.head.push(...head); o.data.push(...data); o.sway.push(sway); };
   const facingFor = (x, z, upK) => {
     const tc = new THREE.Vector3(-x, 0, -z).normalize();
@@ -446,6 +515,7 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
     let R = (0.03 + rng() * 0.016) * cfg.flowerSize;
     if (s.r > 35) R *= 1 + (s.r - 35) / 60;
     push(fl, [s.x, 0, s.z], [...facingFor(s.x, s.z, 1.2 + rng() * 1.8).toArray(), R], [h, pickCol(), rng() * 6.283, rng() * 6.283], 1);
+    if (s.r <= SHADOW_FLOWER_R && shF.pos.length < SHADOW_FLOWER_MAX * 3) copyLast(fl, shF);
   }
   for (let i = 0; i < nB; i++) {
     const s = sector(rng, 2.0, 90, halfH, 18);
@@ -453,16 +523,18 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
     if (blocksHero(s.x, h, s.z, s.r)) continue;
     const R = (0.012 + rng() * 0.008) * cfg.flowerSize * (s.r > 35 ? 1 + (s.r - 35) / 60 : 1);
     push(bd, [s.x, 0, s.z], [...facingFor(s.x, s.z, 1.6).toArray(), R], [h, rng() < 0.45 ? 0 : (rng() < 0.8 ? 1 : 2), rng() * 6.283, rng() * 6.283], 1);
+    if (s.r <= SHADOW_BUD_R && shB.pos.length < SHADOW_BUD_MAX * 3) copyLast(bd, shB);
   }
   for (const hr of heroes) {
-    if (hr.bud) push(bd, hr.base.toArray(), [...hr.facing.toArray(), hr.R], [hr.h, hr.type, rng() * 6.283, 0], 0.22);
-    else push(fl, hr.base.toArray(), [...hr.facing.toArray(), hr.R], [hr.h, hr.col, rng() * 6.283, hr.spin], 0.22);
+    if (hr.bud) { push(bd, hr.base.toArray(), [...hr.facing.toArray(), hr.R], [hr.h, hr.type, rng() * 6.283, 0], 0.22); copyLast(bd, shB); }
+    else { push(fl, hr.base.toArray(), [...hr.facing.toArray(), hr.R], [hr.h, hr.col, rng() * 6.283, hr.spin], 0.22); copyLast(fl, shF); }
   }
   const fMat = new THREE.ShaderMaterial({
     uniforms: { ...U, uPetal: { value: tex.petal }, uA2C: { value: a2c ? 1 : 0 } },
     vertexShader: FLOWER_VS, fragmentShader: FLOWER_FS, side: THREE.DoubleSide, alphaToCoverage: a2c,
   });
-  for (const [o, geo] of [[fl, flowerGeometry()], [bd, budGeometry()]]) {
+  const flowerGeo = flowerGeometry(), budGeo = budGeometry();
+  for (const [o, geo] of [[fl, flowerGeo], [bd, budGeo]]) {
     const n = o.sway.length;
     if (!n) continue;
     const m = new THREE.Mesh(instanced(geo, {
@@ -496,5 +568,23 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   tree.frustumCulled = false;
   group.add(tree);
 
-  return { group, counts: { grass: ng, flowers: fl.sway.length, buds: bd.sway.length } };
+  // ---- 阴影投射体（独立场景，只进 shadow pass，不参与主渲染）----
+  const shadowCasters = [];
+  const mkShadowMesh = (geo, attrs, count, mat) => {
+    if (!count) return;
+    const m = new THREE.Mesh(instanced(geo, attrs, count), mat);
+    m.frustumCulled = false;
+    shadowCasters.push(m);
+  };
+  mkShadowMesh(grassCardGeometry(), {
+    iPos: [new Float32Array(shG.pos), 3], iData: [new Float32Array(shG.d), 4], iData2: [new Float32Array(shG.d2), 2],
+  }, shG.pos.length / 3, grassShadowMaterial(U, tex));
+  const flAttrs = (o) => ({
+    iPos: [new Float32Array(o.pos), 3], iHead: [new Float32Array(o.head), 4],
+    iData: [new Float32Array(o.data), 4], iSway: [new Float32Array(o.sway), 1],
+  });
+  mkShadowMesh(flowerGeo, flAttrs(shF), shF.sway.length, flowerShadowMaterial(U, tex));
+  mkShadowMesh(budGeo, flAttrs(shB), shB.sway.length, flowerShadowMaterial(U, tex));
+
+  return { group, shadowCasters, counts: { grass: ng, flowers: fl.sway.length, buds: bd.sway.length } };
 }

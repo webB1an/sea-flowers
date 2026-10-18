@@ -93,6 +93,10 @@ src/main.js        App 装配、每帧管线、exportAPI
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1920×1080 high | 5.62 ms | 177.9 | 10,191,625 | 26 | 15 | 19 |
 | 3840×2160 high | 12.79 ms | 78.2 | 10,191,625 | 26 | 15 | 19 |
+| 1920×1080 high + M1 阴影 | 6.57 ms | 152.1 | 10,475,019 | 29 | 17 | 21 |
+| 增量（阴影） | **+17.0%**（预算 ≤20%） | | +283k | +3 | +2 | +2 |
+
+> M1 阴影实现：2048² depth map、正交相机覆盖相机前方约 24m、2×2 PCF、近景草/花/花苞子集投射（约 280k 三角）、边缘淡出；low 档关闭、medium 1024。
 
 - 目标（待 M0 实测校准）：
 
@@ -174,6 +178,9 @@ src/main.js        App 装配、每帧管线、exportAPI
 |---|---|---|---|
 | M0 计划与基线 | ✅ 完成 | 2026-10-18 | 本文件；基线截图/bench 已生成（§13） |
 | M0b 模块拆分 | ✅ 完成 | 2026-10-18 | task-13；8 张固定截图像素差 = 0，bench 5.576ms（基线 5.62ms） |
+| M1 方向光阴影（首版） | ✅ 完成 | 2026-10-18 | task-14；2048²/24m/2×2 PCF；bench 6.57ms（+17.0%）；smoke/导出通过；`capture --tag m1` |
+| M1 IBL + PBR 材质 | 待开始 | — | task-15 |
+| M1 SSAO/接触阴影 | 待开始 | — | task-16（补充花瓣层间/接触暗部） |
 | M1 光影 | 待开始 | — | task-14/15/16 |
 | M2 植物 | 待开始 | — | task-17/19 |
 | M3 天空/城市 | 待开始 | — | task-18/20 |
@@ -187,6 +194,8 @@ src/main.js        App 装配、每帧管线、exportAPI
 - 基线 GPU：`ANGLE (NVIDIA, NVIDIA GeForce RTX 5060 Ti (0x00002D04) Direct3D11 vs_5_0 ps_5_0, D3D11)`
 - 基线基线：1080p high **5.62ms / 177.9fps**，4K high **12.79ms / 78.2fps**；triangles 10.19M、26 draw calls、15 programs、19 textures
 - 基线截图 meta：`.review/realism/baseline/meta.json`（含 commit/场景配置/GPU）
+- M1 阴影对比：`capture --tag m1` → `.review/realism/m1/`；A/B 并排与逐像素数据在 `.review/realism/compare/baseline__m1/`；bench 在 `.review/realism/bench-m1.json`
+- 已知限制：英雄花自阴影/花瓣层间暗部受 2048²、24m 覆盖范围与强景深限制，先由 M1 AO（task-16）补足接触遮蔽；后续可按需加近景级联。
 - 验收命令：
   ```
   npm run capture -- --tag <milestone>          # 等价 node scripts/capture.cjs

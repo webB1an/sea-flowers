@@ -7,5 +7,6 @@ import { FOG } from './fog.js';
 
 export { sharedUniforms } from './uniforms.js';
 export { LIGHTING } from './lighting.js';
+export { SHADOW } from './shadow.js';
 
 export const COMMON = [DECLARATIONS, NOISE, WIND, CLOUDS, FOG].join('\n');
