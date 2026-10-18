@@ -6,7 +6,9 @@
   "scripts": {
     "build": "esbuild src/main.js --bundle --format=iife --minify --outfile=dist/flower-sea.js",
     "render": "node render.js",
-    "render:still": "node render.js --still 2 --out poster.png"
+    "render:still": "node render.js --still 2 --out poster.png",
+    "capture": "node scripts/capture.cjs",
+    "bench": "node scripts/bench.cjs"
   },
   "keywords": [
     "three.js",
@@ -26,6 +28,7 @@
   },
   "type": "commonjs",
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.11",
     "esbuild": "^0.28.2",
     "puppeteer-core": "^25.13.0",
     "three": "^0.186.1"

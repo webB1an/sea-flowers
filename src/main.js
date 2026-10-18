@@ -309,6 +309,40 @@ function exportAPI() {
       if (start >= pixels.length) throw new Error(`readChunk: 块序号越界 ${index}`);
       return bytesToBase64(pixels.subarray(start, Math.min(start + EXPORT_CHUNK_BYTES, pixels.length)));
     },
+    // 真实感大改基准：强制渲染 n 帧（不走 rAF），用 1px readPixels 同步 GPU 后统计耗时与渲染统计
+    bench(n = 60, step = 1 / 60) {
+      const gl = app.renderer.getContext();
+      const info = app.renderer.info;
+      const prevAuto = info.autoReset;
+      info.autoReset = false;                  // 逐帧手动 reset，才能统计到完整一帧（含 shadow/后期 pass）
+      const sync = new Uint8Array(4);
+      const times = [];
+      let stats = null;
+      const t0 = performance.now();
+      for (let i = 0; i < n; i++) {
+        info.reset();
+        const s = performance.now();
+        app.frame(i * step);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, sync);
+        times.push(performance.now() - s);
+        stats = { triangles: info.render.triangles, calls: info.render.calls, points: info.render.points, lines: info.render.lines };
+      }
+      info.autoReset = prevAuto;
+      const wall = performance.now() - t0;
+      const sorted = [...times].sort((a, b) => a - b);
+      const at = (q) => +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))].toFixed(3);
+      const avg = times.reduce((a, b) => a + b, 0) / times.length;
+      return {
+        width: app.w, height: app.h, frames: n,
+        avgMs: +avg.toFixed(3), minMs: at(0), p95Ms: at(0.95), maxMs: at(0.999),
+        fps: +(1000 / avg).toFixed(1), wallMs: +wall.toFixed(1),
+        gpu: app.gpuName, effectiveQuality: app.effectiveQuality,
+        counts: app.counts,
+        render: stats,
+        memory: { geometries: info.memory.geometries, textures: info.memory.textures },
+        programs: info.programs ? info.programs.length : null,
+      };
+    },
   };
 }
 

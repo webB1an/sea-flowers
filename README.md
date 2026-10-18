@@ -82,6 +82,13 @@
   ```
   node scripts/smoke.cjs            # CHROME_PATH 可覆盖浏览器路径
   ```
+- 真实感大改计划与验收工具：见 [docs/realism-plan.md](docs/realism-plan.md)。
+  ```
+  npm run capture -- --tag <milestone>                     # 固定场景截图（1920×1080）
+  npm run bench -- --tag <milestone>                       # 强制渲染基准（帧耗时/三角形/程序/纹理）
+  node scripts/capture.cjs --compare baseline <milestone>  # 逐像素 + 并排 A/B 图
+  ```
+  截图与基准输出在 `.review/realism/`（本地生成、不入库）。
 
 ## 截图
 
