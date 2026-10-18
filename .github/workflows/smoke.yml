@@ -39,22 +39,31 @@ jobs:
       - name: Setup Chrome
         id: setup-chrome
         uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
 
       - name: Headless smoke test
         env:
           CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
+          echo "::notice::CHROME_PATH=${CHROME_PATH}"
+          "$CHROME_PATH" --version || echo "::warning::chrome --version failed"
           cat > /tmp/smoke.cjs <<'SMOKE_EOF'
+          const fs = require('fs');
           const path = require('path');
           const { pathToFileURL } = require('url');
           const puppeteer = require('puppeteer-core');
 
+          process.on('unhandledRejection', (e) => {
+            console.log('::error::SMOKE_UNHANDLED ' + JSON.stringify({ error: String(e && e.stack || e) }).replace(/\n/g, ' '));
+            process.exit(1);
+          });
+
           (async () => {
-            const browser = await puppeteer.launch({
-              executablePath: process.env.CHROME_PATH,
-              headless: true,
-              protocolTimeout: 120000,
-              args: [
+            const diag = { chromePath: process.env.CHROME_PATH || null, chromeExists: fs.existsSync(process.env.CHROME_PATH || '') };
+            let browser = null;
+            try {
+              const launchArgs = [
                 '--no-sandbox',
                 '--disable-gpu-sandbox',
                 '--disable-dev-shm-usage',
@@ -65,14 +74,17 @@ jobs:
                 '--hide-scrollbars',
                 '--mute-audio',
                 '--disable-background-timer-throttling',
-              ],
-            });
-            const errors = [];
-            const warnings = [];
-            const pageErrors = [];
-            const requestFailures = [];
-            const diag = {};
-            try {
+              ];
+              console.log('launching: ' + diag.chromePath + ' exists=' + diag.chromeExists);
+              browser = await puppeteer.launch({
+                executablePath: diag.chromePath || undefined,
+                headless: true,
+                protocolTimeout: 120000,
+                args: launchArgs,
+              });
+              const errors = [];
+              const warnings = [];
+              const pageErrors = [];
               const page = await browser.newPage();
               page.on('console', (m) => {
                 const entry = m.type() + ': ' + m.text();
@@ -80,7 +92,6 @@ jobs:
                 else if (m.type() === 'warning') warnings.push(entry);
               });
               page.on('pageerror', (e) => pageErrors.push('pageerror: ' + e.message));
-              page.on('requestfailed', (r) => requestFailures.push(r.url() + ' ' + (r.failure() ? r.failure().errorText : '')));
               await page.setViewport({ width: 1280, height: 720, deviceScaleFactor: 1 });
               const url = pathToFileURL(path.join(process.cwd(), 'index.html')).href + '?ui=0';
               console.log('navigating: ' + url);
@@ -102,7 +113,6 @@ jobs:
                   height: gl ? gl.drawingBufferHeight : 0,
                   gpu: ext && gl ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : (gl ? gl.getParameter(gl.RENDERER) : null),
                   title: document.title,
-                  canvas: c ? [c.width, c.height] : null,
                   fatalVisible: !!fatal && getComputedStyle(fatal).display !== 'none',
                   status: (document.getElementById('status') || {}).textContent || '',
                 };
@@ -110,7 +120,6 @@ jobs:
               diag.errors = errors.slice(0, 20);
               diag.pageErrors = pageErrors.slice(0, 10);
               diag.warnings = warnings.slice(0, 20);
-              diag.requestFailures = requestFailures.slice(0, 10);
               if (!diag.info.webgl2) throw new Error('WebGL2 context is unavailable');
               if (!diag.info.width || !diag.info.height) throw new Error('Canvas drawing buffer is empty');
               if (diag.info.fatalVisible) throw new Error('Page shows fatal WebGL error overlay');
@@ -119,15 +128,13 @@ jobs:
               if (warnings.length) console.log('console warnings (non-fatal): ' + JSON.stringify(warnings.slice(0, 10)));
               console.log('SMOKE OK ' + JSON.stringify(diag.info));
             } catch (error) {
-              diag.error = String((error && error.message) || error);
-              diag.errors = errors.slice(0, 20);
-              diag.pageErrors = pageErrors.slice(0, 10);
-              diag.warnings = warnings.slice(0, 20);
-              diag.requestFailures = requestFailures.slice(0, 10);
+              diag.error = String((error && error.stack) || error);
               console.log('::error::SMOKE_FAIL ' + JSON.stringify(diag).replace(/\n/g, ' '));
               process.exitCode = 1;
             } finally {
-              await browser.close();
+              if (browser) {
+                try { await browser.close(); } catch (e) { console.log('browser close failed: ' + e.message); }
+              }
             }
           })();
           SMOKE_EOF
