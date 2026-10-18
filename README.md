@@ -5,6 +5,11 @@
 基于 three.js（WebGL）的程序化花海：约 8 万丛羽状叶、近万朵波斯菊、远处树线与城市，
 带景深、光晕、云影、时间与天气系统。所有动画首尾无缝循环。
 
+2026 真实感大改（M0–M5）已落地：方向光阴影、天空 IBL、SSAO、双层花瓣/花心几何、
+分簇草甸与近景高细节草、双层云、退台城市天际线、高光加权散景与分割调色。
+完整技术与取舍见 [docs/realism-plan.md](docs/realism-plan.md)，验收报告见
+[docs/realism-report.md](docs/realism-report.md)。
+
 ## 使用
 
 - **实时壁纸**：直接打开 `index.html`（可用于 Lively Wallpaper / Wallpaper Engine 网页壁纸）。
@@ -56,14 +61,18 @@
   `src/quality.js` 自动画质检测与降档决策。
 - 画质档位（设置面板 → 画质）：
 
-  | 档位 | 草丛数 | 花朵系数 | MSAA | 景深采样 |
-  | --- | ---: | ---: | ---: | ---: |
-  | low | 26,000 | 0.5 | 关 | 16 |
-  | medium | 48,000 | 0.75 | 4× | 24 |
-  | high（默认） | 80,000 | 1 | 4× | 36 |
-  | ultra | 130,000 | 1.3 | 8× | 48 |
+  | 档位 | 草丛数 | 近景草 | 花朵系数 | MSAA | 景深采样 | 阴影 | IBL | AO |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+  | low | 26,000 | 600 | 0.5 | 关 | 16 | 关 | 关 | 关 |
+  | medium | 48,000 | 1,400 | 0.75 | 4× | 24 | 1024 | 32² | 开 |
+  | high（默认） | 80,000 | 2,600 | 1 | 4× | 36 | 2048 | 64² | 开 |
+  | ultra | 130,000 | 4,000 | 1.3 | 8× | 48 | 2048 | 128² | 开 |
 
   高档位几何量较大，集成显卡或 4K 屏幕下可能掉帧；可先切到较低档位，或在设置面板中降低"渲染分辨率"。
+- **参考性能**（RTX 5060 Ti，Chrome ANGLE D3D11，headless 强制渲染；测试时桌面 GPU 有其它负载，
+  绝对值仅作参考）：1080p high 8.34ms / 119.9fps，4K high 18.48ms / 54.1fps，
+  1080p medium 6.13ms，1080p low 3.08ms。详细矩阵与同负载 A/B 见
+  [docs/realism-report.md](docs/realism-report.md)。
 - 画质还提供 **auto（按性能）**：启动时依据 GPU 型号与渲染分辨率在 low/medium/high 中自动选择，
   运行中若连续低帧率会自动降一档（带冷却，避免抖动）；设置面板状态栏会显示当前生效档位。
   导出视频时 auto 固定按 high 渲染，保证结果可复现。
@@ -82,7 +91,8 @@
   ```
   node scripts/smoke.cjs            # CHROME_PATH 可覆盖浏览器路径
   ```
-- 真实感大改计划与验收工具：见 [docs/realism-plan.md](docs/realism-plan.md)。
+- 真实感大改计划与验收工具：见 [docs/realism-plan.md](docs/realism-plan.md) 与
+  [docs/realism-report.md](docs/realism-report.md)。
   ```
   npm run capture -- --tag <milestone>                     # 固定场景截图（1920×1080）
   npm run bench -- --tag <milestone>                       # 强制渲染基准（帧耗时/三角形/程序/纹理）

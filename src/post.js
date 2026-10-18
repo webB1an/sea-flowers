@@ -63,13 +63,18 @@ void main() {
   vec3 acc = c0.rgb; float wsum = 1.0, fg = 0.0;
   for (int i = 0; i < TAPS; i++) {
     float fi = float(i) + 0.5;
-    float r = sqrt(fi / float(TAPS)) * R;
     float th = fi * 2.39996;
+    // 六边形光圈轮廓（轻微调制半径），让高光散景更接近真实镜头
+    float hex = 1.0 + 0.10 * cos(6.0 * th + 0.6);
+    float r = sqrt(fi / float(TAPS)) * R * hex;
     vec4 s = texture2D(tHalf, vUv + vec2(cos(th), sin(th)) * r * uTexel);
     float sc = s.a * 0.5;
     float w;
     if (sc < coc0) { w = clamp(abs(sc) - r + 1.0, 0.0, 1.0); if (sc < -0.5) fg += w; }
     else w = clamp(min(abs(sc), abs(coc0)) - r + 1.0, 0.0, 1.0);
+    // 高光加权：真实散景里高光会形成明亮的圆形光斑，而不是被平均成灰雾
+    float lum = dot(s.rgb, vec3(0.2126, 0.7152, 0.0722));
+    w *= 1.0 + smoothstep(1.5, 7.0, lum) * 2.5;
     acc += s.rgb * w; wsum += w;
   }
   gl_FragColor = vec4(acc / wsum, clamp(fg / float(TAPS) * 3.0, 0.0, 1.0));
@@ -128,22 +133,30 @@ void main() {
 
 const FINAL_FS = /* glsl */ `
 uniform sampler2D tHdr, tBloom, tAO;
-uniform float uBloom, uExposure, uSat, uContrast, uGrain, uSeed, uAOStrength;
+uniform float uBloom, uExposure, uSat, uContrast, uGrain, uSeed, uAOStrength, uCA;
 uniform vec3 uTint; uniform vec2 uRes;
 varying vec2 vUv;
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 vec3 toSRGB(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 void main() {
-  vec3 c = texture2D(tHdr, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloom;
+  // 镜头边缘轻微色散（径向，克制）
+  vec2 cd = (vUv - 0.5) * uCA;
+  vec3 hdr = uCA > 0.00001
+    ? vec3(texture2D(tHdr, vUv + cd).r, texture2D(tHdr, vUv).g, texture2D(tHdr, vUv - cd).b)
+    : texture2D(tHdr, vUv).rgb;
+  vec3 c = hdr + texture2D(tBloom, vUv).rgb * uBloom;
   float ao = 1.0;
   if (uAOStrength > 0.001) ao = mix(1.0, texture2D(tAO, vUv).r, uAOStrength);
   c *= ao * uExposure;
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = max(mix(vec3(l), c, uSat) * uTint, 0.0);
   c = toSRGB(aces(c * 0.9));
-  // 电影感收尾（M1）：去饱和 + 高光滚降后的柔和对比；暗角/颗粒收敛，避免插画感
-  c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, 0.94);
+  // 电影感收尾（M1/M4）：高光暖、阴影冷的分割调色 + 去饱和 + 柔和对比；暗角/颗粒收敛
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(c, c * vec3(0.94, 0.98, 1.06), (1.0 - smoothstep(0.0, 0.6, lum)) * 0.55);
+  c = mix(c, c * vec3(1.05, 1.0, 0.96), smoothstep(0.55, 1.0, lum) * 0.4);
+  c = mix(vec3(lum), c, 0.90);
   c = (c - 0.5) * uContrast + 0.5;
   vec2 q = (vUv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
   c *= mix(1.0, smoothstep(1.25, 0.35, length(q) * 1.15), 0.28);
@@ -244,7 +257,7 @@ export class Post {
     this.downP = new Pass(DOWN_FS, { tSrc: { value: null }, uTexel: v2() });
     this.upP = new Pass(UP_FS, { tSrc: { value: null }, tAdd: { value: null }, uTexel: v2() });
     this.final = new Pass(FINAL_FS, {
-      tHdr: { value: null }, tBloom: { value: null }, tAO: { value: null }, uAOStrength: { value: 0 },
+      tHdr: { value: null }, tBloom: { value: null }, tAO: { value: null }, uAOStrength: { value: 0 }, uCA: { value: 0.0014 },
       uBloom: { value: 0.12 }, uExposure: { value: 1 }, uSat: { value: 1 },
       uContrast: { value: 1 }, uGrain: { value: 1 }, uSeed: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uRes: v2(),
     });
@@ -344,6 +357,7 @@ export class Post {
     f.tHdr.value = src; f.tBloom.value = up.texture;
     f.tAO.value = aoTex || this.aoBlurRT.texture;
     f.uAOStrength.value = aoTex ? (p.aoStrength != null ? p.aoStrength : 0.6) : 0;
+    f.uCA.value = p.ca != null ? p.ca : 0.0014;
     f.uBloom.value = p.bloom / this.levels; f.uExposure.value = p.exposure; f.uSat.value = p.sat;
     f.uContrast.value = p.contrast; f.uGrain.value = p.grain; f.uSeed.value = p.seed; f.uTint.value.set(...p.tint);
     this.final.run(r, target);

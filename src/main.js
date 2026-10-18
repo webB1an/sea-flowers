@@ -347,7 +347,7 @@ export class App {
       focus: this.focus, aperture: cfg.dof * 7 * k, maxCoc: 26 * k * Math.max(1, cfg.dof),
       bloom: cfg.bloom * e.bloom * 0.9, exposure: 0.82 * Math.pow(2, cfg.exposure) * e.ex,
       sat: e.sat, contrast: e.contrast, tint: e.tint, grain: cfg.grain, seed: Math.floor((tt / T) * 997),
-      aoStrength: 0.55, aoRadius: 0.5,
+      aoStrength: 0.55, aoRadius: 0.5, ca: this.effectiveQuality === 'low' ? 0 : 0.0014,
     }, target, e.rain > 0.01 ? this.overlay : null);
   }
 }

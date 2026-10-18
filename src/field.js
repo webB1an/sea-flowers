@@ -519,6 +519,7 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   // ---- 草丛：低频密度场 + 分簇分布（小径/空地由密度低值自然形成）----
   const nG = Math.round(q.grass * Math.max(0.2, cfg.grassDensity));
   const gPos = new Float32Array(nG * 3), gD = new Float32Array(nG * 4), gD2 = new Float32Array(nG * 2);
+  const fPos = new Float32Array(nG * 3), fD = new Float32Array(nG * 4), fD2 = new Float32Array(nG * 2);
   // 阴影投射子集：近中景（0–26m）才有必要进 shadow map，限制数量控制 shadow pass 开销
   const SHADOW_GRASS_R = 0, SHADOW_GRASS_MAX = 0;
   const shG = { pos: [], d: [], d2: [] };
@@ -540,8 +541,9 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
       phase: rng() * Math.PI * 2,
     });
   }
-  let ng = 0;
-  for (let i = 0; i < nG * 1.2 && ng < nG; i++) {
+  let ng = 0, ngF = 0;
+  const GRASS_LOD_R = 35;   // 近景 6 段、远景 3 段（LOD 滞回由固定距离阈值+大范围草密度保证）
+  for (let i = 0; i < nG * 1.2 && ng + ngF < nG; i++) {
     let x, z, r;
     const c = clumps.length && rng() > 0.06 ? clumps[(rng() * clumps.length) | 0] : null;
     if (c) {
@@ -559,22 +561,41 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
     for (let k = 0; k < 4 && blocksHero(x, h, z, r); k++) h *= 0.72;
     if (blocksHero(x, h, z, r)) continue;
     const w = h * (0.72 + rng() * 0.4), rot = rng() * Math.PI * 2, variant = Math.floor(rng() * 6);
-    gPos.set([x, 0, z], ng * 3);
-    gD.set([w, h, rot, variant], ng * 4);
     const tint = c ? Math.min(1, Math.max(0, c.tint + (rng() - 0.5) * 0.22)) : rng();
     const phase = c ? c.phase + (rng() - 0.5) * 0.9 : rng() * Math.PI * 2;
-    gD2.set([tint, phase], ng * 2);
+    if (r > GRASS_LOD_R) {
+      fPos.set([x, 0, z], ngF * 3);
+      fD.set([w, h, rot, variant], ngF * 4);
+      fD2.set([tint, phase], ngF * 2);
+      ngF++;
+    } else {
+      gPos.set([x, 0, z], ng * 3);
+      gD.set([w, h, rot, variant], ng * 4);
+      gD2.set([tint, phase], ng * 2);
+      ng++;
+    }
     if (r <= SHADOW_GRASS_R && shG.pos.length < SHADOW_GRASS_MAX * 3) {
       shG.pos.push(x, 0, z); shG.d.push(w, h, rot, variant); shG.d2.push(tint, phase);
     }
-    ng++;
   }
-  const grass = new THREE.Mesh(
-    instanced(grassCardGeometry(), { iPos: [gPos, 3], iData: [gD, 4], iData2: [gD2, 2] }, ng),
-    grassMaterial(U, tex, a2c, '#11240a', '#4c7524'),
-  );
-  grass.frustumCulled = false;
-  group.add(grass);
+  const grassMat = grassMaterial(U, tex, a2c, '#11240a', '#4c7524');
+  if (ng > 0) {
+    const grass = new THREE.Mesh(
+      instanced(grassCardGeometry(6), { iPos: [gPos, 3], iData: [gD, 4], iData2: [gD2, 2] }, ng),
+      grassMat,
+    );
+    grass.frustumCulled = false;
+    group.add(grass);
+  }
+  if (ngF > 0) {
+    // 远景 LOD：3 段卡片，顶点/三角形约减半；由雾/密度掩护切换
+    const far = new THREE.Mesh(
+      instanced(grassCardGeometry(3), { iPos: [fPos, 3], iData: [fD, 4], iData2: [fD2, 2] }, ngF),
+      grassMat,
+    );
+    far.frustumCulled = false;
+    group.add(far);
+  }
 
   // ---- 近景高细节草（0–7.5m，8 段弯曲 + 更宽叶片，LOD 过渡）----
   const nNear = Math.round((q.grassNear || 0) * Math.max(0.2, cfg.grassDensity));
@@ -710,5 +731,5 @@ export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
   mkShadowMesh(flowerGeo, flAttrs(shF), shF.sway.length, flowerShadowMaterial(U, tex));
   mkShadowMesh(budGeo, flAttrs(shB), shB.sway.length, flowerShadowMaterial(U, tex));
 
-  return { group, shadowCasters, counts: { grass: ng, grassNear: nearCount, flowers: fl.sway.length, buds: bd.sway.length } };
+  return { group, shadowCasters, counts: { grass: ng + ngF, grassFar: ngF, grassNear: nearCount, flowers: fl.sway.length, buds: bd.sway.length } };
 }
