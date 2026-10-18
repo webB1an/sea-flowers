@@ -2,7 +2,8 @@
 import { DEFAULTS, resolveConfig } from './config.js';
 
 const STORE = 'flower-sea-3d-v1';
-const VIEW_DEFAULTS = { scale: 'auto', fpsCap: 60, showFps: false };
+const STORE_VERSION = 2;   // v2：默认不限帧（修复高刷屏 60 上限分频的帧节奏抖动）
+const VIEW_DEFAULTS = { scale: 'auto', fpsCap: 0, showFps: false };   // 默认不限帧：高刷屏上避免 60 上限分频造成的抖动
 // 导出尺寸上限与取偶：H.264 要求宽高为偶数，超出 GPU 编码上限的屏幕尺寸会被钳制
 const EXPORT_MAX_W = 7680, EXPORT_MAX_H = 4320;
 const evenClamp = (v, max) => Math.min(max, Math.max(2, Math.floor(v / 2) * 2));
@@ -79,12 +80,19 @@ function el(tag, attrs = {}, ...kids) {
 
 export function initUI({ onConfig, onView, getStatus }) {
   let cfg = resolveConfig({}), view = { ...VIEW_DEFAULTS };
+  let migrated = false;
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
-    if (saved) { cfg = resolveConfig(saved.cfg || {}); view = { ...VIEW_DEFAULTS, ...(saved.view || {}) }; }
+    if (saved) {
+      cfg = resolveConfig(saved.cfg || {});
+      view = { ...VIEW_DEFAULTS, ...(saved.view || {}) };
+      // 旧存档迁移：v2 起默认不限帧，修复高刷屏上 60 上限分频造成的帧节奏抖动
+      if (saved.__v !== STORE_VERSION) { view.fpsCap = 0; migrated = true; }
+    }
   } catch (e) { /* 忽略损坏的存档 */ }
   const state = { get cfg() { return cfg; }, get view() { return view; }, tick };
-  const save = () => localStorage.setItem(STORE, JSON.stringify({ cfg, view }));
+  const save = () => localStorage.setItem(STORE, JSON.stringify({ cfg, view, __v: STORE_VERSION }));
+  if (migrated) save();
 
   const showUI = new URLSearchParams(location.search).get('ui') !== '0';
   const panel = document.getElementById('panel'), gear = document.getElementById('gear');

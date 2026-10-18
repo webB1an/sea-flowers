@@ -25,7 +25,7 @@ export const DEFAULTS = {
   petals: 8,             // 飘落花瓣
   pollen: 1,             // 光点 / 绒絮
   fireflies: 1,          // 萤火虫（夜晚）
-  quality: 'high',       // low | medium | high | ultra
+  quality: 'auto',        // low | medium | high | ultra | auto（按 GPU/分辨率选择，并随帧率降档）
 };
 
 export const QUALITY = {

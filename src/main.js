@@ -210,8 +210,9 @@ export class App {
       this.iblCamera.position.copy(this.camera.position);
       this.iblScene.add(sky.mesh.clone());   // 共享 geometry/material；uniforms 与主天空同源
       this.U.uEnvMap.value = rt.texture;
-      this.U.uEnvIntensity.value = 0.5;      // 其余 10% 用解析环境光兜底，避免整体偏亮/偏色
+      this.U.uEnvIntensity.value = 0.5;      // 其余 50% 用解析环境光兜底，避免整体偏亮/偏色
     }
+    this.iblFrame = 0;                        // IBL 重建节流计数（每 2 帧重建一次）
   }
 
   // 阴影贴图渲染：方向光正交相机覆盖近中景；主场景 shader 通过 uShadowMap/uShadowMatrix 采样
@@ -339,8 +340,13 @@ export class App {
 
     // 阴影 pass 必须在主场景渲染前完成（uShadowMatrix/uShadowMap 供接收材质采样）
     if (this.shadowRT) this.renderShadow(e.lightDir);
-    // IBL 依赖当前天空/光照 uniform，必须在环境参数更新之后、主场景渲染之前重建
-    if (this.iblRT) this.updateIBL();
+    // IBL 依赖当前天空/光照 uniform，必须在环境参数更新之后、主场景渲染之前重建。
+    // 天空/天气变化缓慢，按帧节流重建，避免每帧 6 面 cubemap + mipmap 生成造成帧时间尖峰。
+    if (this.iblRT) {
+      const every = 2;
+      const jump = Math.abs(tt - (this.iblT == null ? 1e9 : this.iblT)) > 0.2;  // 导出/跳帧时强制刷新
+      if (jump || (this.iblFrame++ % every) === 0) { this.updateIBL(); this.iblT = tt; }
+    }
 
     const k = this.h / 1080;
     this.post.render(this.scene, this.camera, {
