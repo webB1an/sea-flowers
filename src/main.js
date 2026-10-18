@@ -9,6 +9,7 @@ import { createSky, createCity } from './sky.js';
 import { createParticles } from './particles.js';
 import { Post } from './post.js';
 import { initUI } from './ui.js';
+import { createFrameScheduler } from './scheduler.js';
 
 const lin = (hex) => new THREE.Color(hex);
 const MOON_DIR = new THREE.Vector3(-0.42, 0.42, -0.8).normalize();
@@ -19,8 +20,9 @@ const PALETTES = { // 默认颜色使用手调的三段渐变
 };
 const DEFAULT_MAIN = { white: '#f6eff1', pink: '#ee9fc3', magenta: '#d6127a', crimson: '#8a0a34' };
 function palette(name, main) {
-  if (main.toLowerCase() === DEFAULT_MAIN[name]) return PALETTES[name].map(lin);
-  const m = lin(main);
+  const hex = String(main || '').toLowerCase();   // 统一大小写：大写 HEX 也命中手调渐变
+  if (hex === DEFAULT_MAIN[name]) return PALETTES[name].map(lin);
+  const m = lin(hex);
   const l = 0.2126 * m.r + 0.7152 * m.g + 0.0722 * m.b;
   const base = l > 0.6 ? m.clone().lerp(lin('#c88aa6'), 0.55) : m.clone().multiplyScalar(0.35);
   return [base, m, m.clone().lerp(new THREE.Color(1, 1, 1), 0.3)];
@@ -43,6 +45,7 @@ export class App {
     this.world = null;
     this.post = null;
     this.wCur = null;
+    this.envCache = new Map();
     this.w = 1; this.h = 1;
   }
 
@@ -117,6 +120,25 @@ export class App {
     this.scene.add(world);
   }
 
+  // 显式释放场景/贴图/后期/渲染器资源（页面销毁或需要彻底重建时使用）
+  destroy() {
+    if (this.world) {
+      this.scene.remove(this.world);
+      this.world.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose());
+      });
+      this.world = null;
+    }
+    if (this.rain) { this.rain.geometry.dispose(); this.rain.material.dispose(); }
+    this.rain = null;
+    this.overlay.clear();
+    for (const t of Object.values(this.tex)) t.dispose();
+    if (this.post) { this.post.dispose(); this.post = null; }
+    this.envCache.clear();
+    this.renderer.dispose();
+  }
+
   resolveHour(t, now = new Date()) {
     const cfg = this.cfg;
     if (cfg.timeMode === 'clock' && !this.exportMode) return now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
@@ -129,6 +151,21 @@ export class App {
     if (WEATHERS.includes(w)) return { weights: { [w]: 1 }, name: w };
     if (this.exportMode) return { weights: { clear: 1 }, name: 'clear' };
     return autoWeather(now);
+  }
+
+  // 环境计算缓存：按量化时间（0.001h≈3.6s）与量化天气权重复用结果，避免逐帧新建
+  // 大量数组/Vector3（长时间壁纸运行时的 GC 抖动来源）。量化带来的光照差异不可见。
+  envFor(hour, weights) {
+    const hk = Math.round(hour * 1000);
+    let wk = '';
+    for (const w of WEATHERS) wk += Math.round((weights[w] || 0) * 1000) + ',';
+    const key = hk + '|' + wk;
+    const cached = this.envCache.get(key);
+    if (cached) return cached;
+    const e = computeEnv(hk / 1000, weights);
+    if (this.envCache.size > 512) this.envCache.clear();
+    this.envCache.set(key, e);
+    return e;
   }
 
   // t：动画时间（秒）；dt：距上一帧的秒数（实时模式用于天气平滑过渡，导出时为 0）
@@ -151,7 +188,7 @@ export class App {
       for (const w of WEATHERS) this.wCur[w] = (this.wCur[w] || 0) + ((weights[w] || 0) - (this.wCur[w] || 0)) * k;
     }
     this.status = { hour, weather: name };
-    const e = computeEnv(hour, this.wCur);
+    const e = this.envFor(hour, this.wCur);
     U.uLightDir.value.copy(e.lightDir); U.uSunDir.value.copy(e.sunDir); U.uMoonDir.value.copy(MOON_DIR);
     U.uLightColor.value.set(...e.lightCol); U.uGlowColor.value.set(...e.glow); U.uSunDisc.value.set(...e.sunDisc);
     U.uSkyAmb.value.set(...e.skyAmb); U.uGroundAmb.value.set(...e.groundAmb);
@@ -209,28 +246,62 @@ function exportAPI() {
 // ---------------- 实时网页模式 ----------------
 function live() {
   const canvas = document.getElementById('c');
-  const app = new App(canvas);
+  // WebGL 不可用 / 上下文丢失时的可见兜底提示（不能只打 console）
+  const errEl = document.createElement('div');
+  errEl.id = 'fatal';
+  errEl.style.cssText = 'position:fixed;inset:0;z-index:20;display:none;padding:32px 40px;background:rgba(12,16,12,.92);color:#f2e9ec;font:14px/1.7 system-ui,"Microsoft YaHei","PingFang SC",sans-serif;white-space:pre-wrap;';
+  document.body.append(errEl);
+  let app = null, fatal = false, contextLost = false;
+  const showError = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
+  const hideError = () => { errEl.style.display = 'none'; };
+
   const ui = initUI({
-    onConfig: (cfg) => app.setConfig(cfg),
+    onConfig: (cfg) => { if (app) app.setConfig(cfg); },
     onView: () => resize(),
-    getStatus: () => ({ ...app.status, counts: app.counts, size: [app.w, app.h] }),
+    getStatus: () => (app ? { ...app.status, counts: app.counts, size: [app.w, app.h] } : { counts: null, size: [innerWidth, innerHeight] }),
   });
-  app.setConfig(ui.cfg);
+
   function resize() {
+    if (!app) return;
     const v = ui.view;
     const k = v.scale === 'auto' ? Math.min(window.devicePixelRatio || 1, 2) : +v.scale;
     app.setSize(Math.max(320, Math.round(innerWidth * k)), Math.max(180, Math.round(innerHeight * k)));
   }
+
+  try {
+    app = new App(canvas);
+  } catch (e) {
+    fatal = true;
+    showError('无法初始化 WebGL2 渲染。\n\n' + ((e && e.message) || e) + '\n\n请使用支持 WebGL2 的最新版 Chrome / Edge，并确认浏览器已启用硬件加速（或更新显卡驱动）。');
+    console.error(e);
+  }
+  if (app) {
+    app.setConfig(ui.cfg);
+    resize();
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      contextLost = true;
+      showError('图形上下文丢失，正在尝试恢复…\n\n若长时间停留在此界面，请重启浏览器或检查显卡驱动。');
+    }, false);
+    canvas.addEventListener('webglcontextrestored', () => {
+      // three 已在内部恢复 GL 状态并会在下次使用时就地重建 GPU 资源，这里只需恢复渲染循环，
+      // 避免 rebuild 时对旧上下文对象执行 delete 触发 WebGL 警告。
+      contextLost = false;
+      prevT = performance.now();
+      hideError();
+    }, false);
+  }
+
   let rt;
   addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(resize, 200); });
-  resize();
+
   const start = performance.now();
-  let last = 0, prevT = start;
+  let prevT = start;
+  const shouldRender = createFrameScheduler();
   (function loop(now) {
     requestAnimationFrame(loop);
-    const cap = +ui.view.fpsCap;
-    if (cap > 0 && now - last < 1000 / cap - 2) return;
-    last = now;
+    if (fatal || contextLost || !app) return;
+    if (!shouldRender(now, +ui.view.fpsCap)) return;
     app.frame((now - start) / 1000, Math.min(0.25, (now - prevT) / 1000));
     prevT = now;
     ui.tick(now);

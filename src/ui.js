@@ -3,6 +3,9 @@ import { DEFAULTS, resolveConfig } from './config.js';
 
 const STORE = 'flower-sea-3d-v1';
 const VIEW_DEFAULTS = { scale: 'auto', fpsCap: 60, showFps: false };
+// 导出尺寸上限与取偶：H.264 要求宽高为偶数，超出 GPU 编码上限的屏幕尺寸会被钳制
+const EXPORT_MAX_W = 7680, EXPORT_MAX_H = 4320;
+const evenClamp = (v, max) => Math.min(max, Math.max(2, Math.floor(v / 2) * 2));
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const hhmm = (h) => { const m = Math.round(h * 60) % 1440; return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 const WEATHER_NAMES = { auto: '自动', clear: '晴', partly: '多云', overcast: '阴', fog: '雾', rain: '小雨' };
@@ -188,7 +191,7 @@ export function initUI({ onConfig, onView, getStatus }) {
   document.getElementById('export').onclick = () => {
     const res = document.getElementById('exportRes').value;
     const [width, height] = res === 'screen'
-      ? [Math.round(screen.width * (devicePixelRatio || 1)), Math.round(screen.height * (devicePixelRatio || 1))]
+      ? [evenClamp(Math.round(screen.width * (devicePixelRatio || 1)), EXPORT_MAX_W), evenClamp(Math.round(screen.height * (devicePixelRatio || 1)), EXPORT_MAX_H)]
       : res.split('x').map(Number);
     const st = getStatus();
     const data = { ...clone(cfg), width, height, fps: +document.getElementById('exportFps').value };
@@ -213,7 +216,11 @@ export function initUI({ onConfig, onView, getStatus }) {
         const sel = document.getElementById('exportRes'), opt = `${data.width}x${data.height}`;
         if ([...sel.options].some((o) => o.value === opt)) sel.value = opt;
       }
-      if (data.fps) document.getElementById('exportFps').value = String(data.fps);
+      if (data.fps) {
+        const fpsVal = String(Math.round(+data.fps));
+        const fpsSel = document.getElementById('exportFps');
+        if ([...fpsSel.options].some((o) => o.value === fpsVal)) fpsSel.value = fpsVal;
+      }
       refreshAll(); changed(false); toast('配置已导入');
     } catch (e) { toast('配置文件无法解析'); }
     fileInp.value = '';

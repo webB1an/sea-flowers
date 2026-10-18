@@ -1,18 +1,31 @@
 {
   "name": "sea-flowers",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "波斯菊花海 · 基于 three.js 的程序化 3D 动态壁纸（支持实时壁纸与离线视频导出）",
   "scripts": {
     "build": "esbuild src/main.js --bundle --format=iife --minify --outfile=dist/flower-sea.js",
-    "render": "node render.js"
+    "render": "node render.js",
+    "render:still": "node render.js --still 2 --out poster.png"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "three.js",
+    "webgl",
+    "wallpaper",
+    "procedural",
+    "flower"
+  ],
+  "author": "yoohoyoo",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/webB1an/sea-flowers.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "type": "commonjs",
-  "dependencies": {
-    "@napi-rs/canvas": "^1.0.11",
+  "devDependencies": {
     "esbuild": "^0.28.2",
     "puppeteer-core": "^25.13.0",
     "three": "^0.186.1"

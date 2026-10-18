@@ -163,5 +163,6 @@ export function autoWeather(date = new Date()) {
   const w = {};
   w[prev] = (w[prev] || 0) + (1 - k);
   w[cur] = (w[cur] || 0) + k;
-  return { weights: w, name: cur };
+  // 状态栏显示“当前主导天气”，过渡期前 15 分钟实际是 prev 占优
+  return { weights: w, name: k >= 0.5 ? cur : prev };
 }

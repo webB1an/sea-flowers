@@ -39,13 +39,42 @@ export const WEATHERS = ['clear', 'partly', 'overcast', 'fog', 'rain'];
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
+const TIME_MODES = ['clock', 'fixed', 'timelapse'];
+const WEATHER_MODES = [...WEATHERS, 'auto'];
+const HEX6 = /^#[0-9a-f]{6}$/i;
+// [最小值, 最大值]：非法/越界值会被钳制（与设置面板滑块范围一致）
+const CLAMPS = {
+  period: [2, 600], wind: [0, 3], windSpeed: [0.25, 3], grassDensity: [0.3, 1.6],
+  flowerDensity: [0, 4], flowerSize: [0.5, 2], heroSize: [0.5, 1.6], haze: [0, 3],
+  dof: [0, 2], bloom: [0, 2.5], exposure: [-2, 2], grain: [0, 2],
+  butterflies: [0, 8], petals: [0, 30], pollen: [0, 3], fireflies: [0, 3],
+};
+const clampNum = (v, [lo, hi], def) => {
+  const n = +v;
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+};
+
+// 白名单/范围校验：坏配置（手改、旧版导出、导入出错）不能导致 NaN/黑屏/UI 下拉框空白
 export function resolveConfig(o = {}) {
-  const c = { ...clone(DEFAULTS), ...o };
-  c.colors = { ...DEFAULTS.colors, ...(o.colors || {}) };
-  c.colorWeights = { ...DEFAULTS.colorWeights, ...(o.colorWeights || {}) };
-  for (const k of Object.keys(c)) if (!(k in DEFAULTS)) delete c[k];
-  c.period = Math.max(2, +c.period || DEFAULTS.period);
+  const src = o && typeof o === 'object' ? o : {};
+  const c = { ...clone(DEFAULTS), ...src };
+  c.colors = { ...DEFAULTS.colors, ...(src.colors && typeof src.colors === 'object' ? src.colors : {}) };
+  c.colorWeights = { ...DEFAULTS.colorWeights, ...(src.colorWeights && typeof src.colorWeights === 'object' ? src.colorWeights : {}) };
+  for (const k of Object.keys(c)) if (!(k in DEFAULTS)) delete c[k];   // 丢弃未知键，避免污染配置
+  if (!TIME_MODES.includes(c.timeMode)) c.timeMode = DEFAULTS.timeMode;
+  if (!WEATHER_MODES.includes(c.weather)) c.weather = DEFAULTS.weather;
   if (!QUALITY[c.quality]) c.quality = DEFAULTS.quality;
+  c.hour = Number.isFinite(+c.hour) ? (((+c.hour % 24) + 24) % 24) : DEFAULTS.hour;
+  for (const [k, range] of Object.entries(CLAMPS)) c[k] = clampNum(c[k], range, DEFAULTS[k]);
+  c.seed = Math.max(0, Math.floor(+c.seed) || 0);
+  for (const k of ['heroes', 'skyline']) c[k] = !!c[k];
+  for (const k of Object.keys(DEFAULTS.colors)) {
+    if (!HEX6.test(String(c.colors[k] || ''))) c.colors[k] = DEFAULTS.colors[k];
+  }
+  for (const k of Object.keys(DEFAULTS.colorWeights)) {
+    const w = +c.colorWeights[k];
+    c.colorWeights[k] = Number.isFinite(w) ? Math.min(1, Math.max(0, w)) : DEFAULTS.colorWeights[k];
+  }
   return c;
 }
 

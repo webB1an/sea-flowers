@@ -245,6 +245,11 @@ export class Post {
   }
 
   dispose() {
+    // Pass 的 ShaderMaterial/网格不随 render target 释放，需要一并销毁，避免切换画质时泄漏
+    for (const p of [this.coc, this.blurP, this.comp, this.pre, this.downP, this.upP, this.final]) {
+      p.mat.dispose();
+      p.scene.clear();
+    }
     for (const t of [this.scene, this.half, this.blur, this.hdr, ...this.down, ...this.up]) t.dispose();
   }
 }
