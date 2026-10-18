@@ -127,8 +127,8 @@ void main() {
 }`;
 
 const FINAL_FS = /* glsl */ `
-uniform sampler2D tHdr, tBloom;
-uniform float uBloom, uExposure, uSat, uContrast, uGrain, uSeed;
+uniform sampler2D tHdr, tBloom, tAO;
+uniform float uBloom, uExposure, uSat, uContrast, uGrain, uSeed, uAOStrength;
 uniform vec3 uTint; uniform vec2 uRes;
 varying vec2 vUv;
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
@@ -136,7 +136,9 @@ vec3 toSRGB(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.
 float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 void main() {
   vec3 c = texture2D(tHdr, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloom;
-  c *= uExposure;
+  float ao = 1.0;
+  if (uAOStrength > 0.001) ao = mix(1.0, texture2D(tAO, vUv).r, uAOStrength);
+  c *= ao * uExposure;
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = max(mix(vec3(l), c, uSat) * uTint, 0.0);
   c = toSRGB(aces(c * 0.9));
@@ -150,16 +152,84 @@ void main() {
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
 
+// ---------------- SSAO / 接触阴影（M1） ----------------
+const AO_FS = /* glsl */ `
+${LINDEPTH}
+uniform sampler2D tDepth;
+uniform mat4 uProjMat;
+uniform float uTanHalfFov, uAspect, uRadius, uBias, uSeed;
+uniform vec2 uTexel;
+varying vec2 vUv;
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec3 viewPos(vec2 uv) {
+  float d = texture2D(tDepth, uv).r;
+  float z = linDepth(d);
+  vec2 ndc = uv * 2.0 - 1.0;
+  return vec3(ndc.x * z * uTanHalfFov * uAspect, ndc.y * z * uTanHalfFov, -z);
+}
+void main() {
+  float d0 = texture2D(tDepth, vUv).r;
+  if (d0 > 0.9998) { gl_FragColor = vec4(1.0); return; }   // 天空/远背景不做 AO
+  vec3 P = viewPos(vUv);
+  vec3 Px = viewPos(vUv + vec2(uTexel.x, 0.0));
+  vec3 Py = viewPos(vUv + vec2(0.0, uTexel.y));
+  vec3 N = normalize(cross(Px - P, Py - P));
+  if (N.z < 0.0) N = -N;                                   // 面向相机的半空间
+  float rot = hash12(vUv * 713.0 + uSeed) * 6.2831853;
+  vec3 T = normalize(cross(abs(N.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), N));
+  vec3 B = cross(N, T);
+  float occ = 0.0;
+  for (int i = 0; i < 12; i++) {
+    float fi = float(i);
+    float r = sqrt((fi + 0.5) / 12.0);
+    float th = 2.399963 * fi + rot;
+    vec3 k = vec3(cos(th) * r, sin(th) * r, sqrt(max(0.0, 1.0 - r * r)));
+    vec3 dir = T * k.x + B * k.y + N * k.z;
+    vec3 sp = P + dir * uRadius;
+    vec4 clip = uProjMat * vec4(sp, 1.0);
+    vec2 suv = clip.xy / clip.w * 0.5 + 0.5;
+    if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;
+    float sz = linDepth(texture2D(tDepth, suv).r);
+    float sampleZ = -sp.z;
+    float range = smoothstep(0.0, 1.0, uRadius / max(0.0001, abs(sampleZ - sz)));
+    if (sz < sampleZ - uBias) occ += range;
+  }
+  float ao = 1.0 - occ / 12.0;
+  gl_FragColor = vec4(ao, ao, ao, 1.0);
+}`;
+const AO_BLUR_FS = /* glsl */ `
+${LINDEPTH}
+uniform sampler2D tAO, tDepth;
+uniform vec2 uTexel;
+varying vec2 vUv;
+void main() {
+  float dc = linDepth(texture2D(tDepth, vUv).r);
+  float sum = 0.0, wsum = 0.0;
+  for (int y = -2; y <= 2; y++) {
+    for (int x = -2; x <= 2; x++) {
+      vec2 uv = vUv + vec2(float(x), float(y)) * uTexel;
+      float ds = linDepth(texture2D(tDepth, uv).r);
+      float w = 1.0 / (1.0 + abs(ds - dc) * 6.0);          // 深度双边权重，避免跨物体渗色
+      sum += texture2D(tAO, uv).r * w; wsum += w;
+    }
+  }
+  float ao = sum / max(wsum, 1e-4);
+  gl_FragColor = vec4(ao, ao, ao, 1.0);
+}`;
+
 export class Post {
   constructor(renderer, q) {
     this.renderer = renderer;
     this.samples = q.samples;
+    this.aoOn = !!q.ao;
     const opt = { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
     this.opt = opt;
     this.scene = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: q.samples, depthBuffer: true });
     this.scene.depthTexture = new THREE.DepthTexture(1, 1);
     this.half = new THREE.WebGLRenderTarget(1, 1, opt);
     this.blur = new THREE.WebGLRenderTarget(1, 1, opt);
+    this.aoRT = new THREE.WebGLRenderTarget(1, 1, opt);
+    this.aoBlurRT = new THREE.WebGLRenderTarget(1, 1, opt);
     this.hdr = new THREE.WebGLRenderTarget(1, 1, opt);
     this.levels = 6;
     this.down = Array.from({ length: this.levels }, () => new THREE.WebGLRenderTarget(1, 1, opt));
@@ -174,9 +244,17 @@ export class Post {
     this.downP = new Pass(DOWN_FS, { tSrc: { value: null }, uTexel: v2() });
     this.upP = new Pass(UP_FS, { tSrc: { value: null }, tAdd: { value: null }, uTexel: v2() });
     this.final = new Pass(FINAL_FS, {
-      tHdr: { value: null }, tBloom: { value: null }, uBloom: { value: 0.12 }, uExposure: { value: 1 }, uSat: { value: 1 },
+      tHdr: { value: null }, tBloom: { value: null }, tAO: { value: null }, uAOStrength: { value: 0 },
+      uBloom: { value: 0.12 }, uExposure: { value: 1 }, uSat: { value: 1 },
       uContrast: { value: 1 }, uGrain: { value: 1 }, uSeed: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uRes: v2(),
     });
+    const aoCommon = { uNear: { value: 0.05 }, uFar: { value: 6000 }, uTexel: v2() };
+    this.aoCommon = aoCommon;
+    this.ao = new Pass(AO_FS, {
+      ...aoCommon, tDepth: { value: null }, uProjMat: { value: new THREE.Matrix4() },
+      uTanHalfFov: { value: 0.344 }, uAspect: { value: 1 }, uRadius: { value: 0.5 }, uBias: { value: 0.02 }, uSeed: { value: 0 },
+    });
+    this.aoBlurP = new Pass(AO_BLUR_FS, { ...aoCommon, tAO: { value: null }, tDepth: { value: null } });
   }
 
   setSize(w, h) {
@@ -184,7 +262,9 @@ export class Post {
     this.scene.setSize(w, h);
     this.scene.depthTexture.image.width = w; this.scene.depthTexture.image.height = h;
     const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
-    this.half.setSize(hw, hh); this.blur.setSize(hw, hh); this.hdr.setSize(w, h);
+    this.half.setSize(hw, hh); this.blur.setSize(hw, hh);
+    this.aoRT.setSize(hw, hh); this.aoBlurRT.setSize(hw, hh);
+    this.hdr.setSize(w, h);
     for (let i = 0; i < this.levels; i++) {
       const s = 1 << (i + 1);
       this.down[i].setSize(Math.max(1, Math.round(w / s)), Math.max(1, Math.round(h / s)));
@@ -203,6 +283,27 @@ export class Post {
     this.dof.uFocus.value = p.focus;
     this.dof.uAperture.value = p.aperture; this.dof.uMaxCoc.value = p.maxCoc;
     this.dof.uNear.value = camera.near; this.dof.uFar.value = camera.far;
+
+    // SSAO/接触阴影：半分辨率、深度重建法线、双边模糊，最终在 FINAL 里乘到 HDR 颜色
+    let aoTex = null;
+    if (this.aoOn) {
+      const a = this.ao.u;
+      a.tDepth.value = this.scene.depthTexture;
+      a.uNear.value = camera.near; a.uFar.value = camera.far;
+      a.uProjMat.value.copy(camera.projectionMatrix);
+      a.uTanHalfFov.value = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      a.uAspect.value = w / h;
+      a.uTexel.value.set(1 / w, 1 / h);
+      a.uRadius.value = p.aoRadius || 0.5;
+      a.uSeed.value = p.seed || 0;
+      this.ao.run(r, this.aoRT);
+      const b = this.aoBlurP.u;
+      b.tAO.value = this.aoRT.texture; b.tDepth.value = this.scene.depthTexture;
+      b.uNear.value = camera.near; b.uFar.value = camera.far;
+      b.uTexel.value.set(1 / this.aoRT.width, 1 / this.aoRT.height);
+      this.aoBlurP.run(r, this.aoBlurRT);
+      aoTex = this.aoBlurRT.texture;
+    }
 
     const blurOn = p.aperture > 0.05;
     if (blurOn) {
@@ -241,6 +342,8 @@ export class Post {
 
     const f = this.final.u;
     f.tHdr.value = src; f.tBloom.value = up.texture;
+    f.tAO.value = aoTex || this.aoBlurRT.texture;
+    f.uAOStrength.value = aoTex ? (p.aoStrength != null ? p.aoStrength : 0.6) : 0;
     f.uBloom.value = p.bloom / this.levels; f.uExposure.value = p.exposure; f.uSat.value = p.sat;
     f.uContrast.value = p.contrast; f.uGrain.value = p.grain; f.uSeed.value = p.seed; f.uTint.value.set(...p.tint);
     this.final.run(r, target);
@@ -248,10 +351,10 @@ export class Post {
 
   dispose() {
     // Pass 的 ShaderMaterial/网格不随 render target 释放，需要一并销毁，避免切换画质时泄漏
-    for (const p of [this.coc, this.blurP, this.comp, this.pre, this.downP, this.upP, this.final]) {
+    for (const p of [this.coc, this.blurP, this.comp, this.pre, this.downP, this.upP, this.final, this.ao, this.aoBlurP]) {
       p.mat.dispose();
       p.scene.clear();
     }
-    for (const t of [this.scene, this.half, this.blur, this.hdr, ...this.down, ...this.up]) t.dispose();
+    for (const t of [this.scene, this.half, this.blur, this.hdr, this.aoRT, this.aoBlurRT, ...this.down, ...this.up]) t.dispose();
   }
 }

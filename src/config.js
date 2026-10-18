@@ -29,10 +29,10 @@ export const DEFAULTS = {
 };
 
 export const QUALITY = {
-  low: { grass: 26000, flowers: 0.5, samples: 0, dofTaps: 16, treeline: 700, shadow: 0, ibl: 0 },
-  medium: { grass: 48000, flowers: 0.75, samples: 4, dofTaps: 24, treeline: 1000, shadow: 1024, ibl: 32 },
-  high: { grass: 80000, flowers: 1, samples: 4, dofTaps: 36, treeline: 1400, shadow: 2048, ibl: 64 },
-  ultra: { grass: 130000, flowers: 1.3, samples: 8, dofTaps: 48, treeline: 1800, shadow: 2048, ibl: 128 },
+  low: { grass: 26000, flowers: 0.5, samples: 0, dofTaps: 16, treeline: 700, shadow: 0, ibl: 0, ao: 0 },
+  medium: { grass: 48000, flowers: 0.75, samples: 4, dofTaps: 24, treeline: 1000, shadow: 1024, ibl: 32, ao: 1 },
+  high: { grass: 80000, flowers: 1, samples: 4, dofTaps: 36, treeline: 1400, shadow: 2048, ibl: 64, ao: 1 },
+  ultra: { grass: 130000, flowers: 1.3, samples: 8, dofTaps: 48, treeline: 1800, shadow: 2048, ibl: 128, ao: 1 },
 };
 
 export const WEATHERS = ['clear', 'partly', 'overcast', 'fog', 'rain'];

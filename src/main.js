@@ -137,10 +137,11 @@ export class App {
     if (this.iblRT) { this.iblRT.dispose(); this.iblRT = null; }
     this.iblCamera = null;
     this.iblScene.clear();
-    if (!this.post || this.post.samples !== q.samples || this.postTaps !== q.dofTaps) {
+    if (!this.post || this.post.samples !== q.samples || this.postTaps !== q.dofTaps || this.postAO !== (q.ao || 0)) {
       if (this.post) this.post.dispose();
       this.post = new Post(this.renderer, q);
       this.postTaps = q.dofTaps;
+      this.postAO = q.ao || 0;
       this.post.setSize(this.w, this.h);
     }
     if (this.rain) { this.rain.geometry.dispose(); this.rain.material.dispose(); }
@@ -346,6 +347,7 @@ export class App {
       focus: this.focus, aperture: cfg.dof * 7 * k, maxCoc: 26 * k * Math.max(1, cfg.dof),
       bloom: cfg.bloom * e.bloom * 0.9, exposure: 0.82 * Math.pow(2, cfg.exposure) * e.ex,
       sat: e.sat, contrast: e.contrast, tint: e.tint, grain: cfg.grain, seed: Math.floor((tt / T) * 997),
+      aoStrength: 0.55, aoRadius: 0.5,
     }, target, e.rain > 0.01 ? this.overlay : null);
   }
 }
