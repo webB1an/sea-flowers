@@ -77,7 +77,11 @@
   ```
   同样需要 ffmpeg，默认输出文件写在 `legacy/` 目录。
 - CI：GitHub Actions（`.github/workflows/smoke.yml`）在 push / PR 时运行构建一致性检查
-  （`npm run build` 后 `dist/flower-sea.js` 无差异）和无头冒烟（WebGL2 可用、0 条 console 错误/警告）。
+  （`npm run build` 后 `dist/flower-sea.js` 无差异）和无头冒烟：WebGL2 可用、无 fatal 覆盖层、
+  0 条 console error / pageerror（warning 只输出提示不判失败）。同一脚本可在本地运行：
+  ```
+  node scripts/smoke.cjs            # CHROME_PATH 可覆盖浏览器路径
+  ```
 
 ## 截图
 
