@@ -45,42 +45,71 @@ function grassCardGeometry() {
 }
 
 function stem(b) {
-  for (const [ax, az] of [[1, 0], [0, 1]]) {
-    b.grid(1, 8, (u, t) => ({ p: [(u * 2 - 1) * ax, t, (u * 2 - 1) * az], n: [az, 0, -ax] }), 0);
-  }
+  // 六棱柱近似圆柱（着色器里按花头半径缩放），比十字面片更有体积
+  const sides = 6, segs = 6;
+  b.grid(sides, segs, (u, t) => {
+    const a = u * Math.PI * 2;
+    return { p: [Math.cos(a), t, Math.sin(a)], n: [Math.cos(a), 0, Math.sin(a)] };
+  }, 0);
 }
 
 // 花头坐标系：Y 为花朝向，单位半径 1（着色器里乘以花头半径）
+// part：0 茎 | 1 外瓣 | 2 花心 | 3 花苞 | 4 萼片 | 5 内瓣
 function flowerGeometry() {
   const b = new Builder();
   stem(b);
-  const n = 8, r0 = 0.12;
+
+  // 外层 8 瓣：杯状弯曲 + 基部收窄 + 边缘下卷
+  const n = 8, r0 = 0.1;
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 + Math.sin(i * 7.3) * 0.08;
+    const a = (i / n) * Math.PI * 2 + Math.sin(i * 7.3) * 0.1;
     const dx = Math.cos(a), dz = Math.sin(a), px = -dz, pz = dx;
-    const len = 0.9 + 0.1 * Math.abs(Math.sin(i * 3.1));
-    const cup = 0.1 + 0.08 * Math.abs(Math.sin(i * 5.7));
-    const tilt = Math.sin(i * 2.3) * 0.06;
-    const w = 0.74;
+    const len = 0.92 + 0.12 * Math.abs(Math.sin(i * 3.1 + 0.7));
+    const cup = 0.16 + 0.1 * Math.abs(Math.sin(i * 5.7));
+    const tilt = Math.sin(i * 2.3) * 0.1;
+    const w = 0.8;
     b.grid(3, 6, (u, t) => {
       const rr = r0 + (len - r0) * t;
-      const across = (u - 0.5) * w;
-      const y = cup * t * t + tilt * t + Math.sin(u * Math.PI) * 0.02 * t;
+      const profile = 0.18 + 0.82 * Math.pow(t, 0.5);    // 基部窄、中上部宽（倒卵形）
+      const across = (u - 0.5) * w * profile;
+      const edge = Math.abs(u - 0.5) * 2;
+      const y = cup * t * t + tilt * t + 0.035 * Math.sin(u * Math.PI) * t
+        - 0.10 * edge * edge * t * t                          // 边缘下卷
+        + 0.03 * Math.pow(t, 3.0) * Math.cos(edge * Math.PI);
       const slope = 2 * cup * t + tilt;
-      const nn = new THREE.Vector3(-dx * slope, 1, -dz * slope).normalize();
+      const curl = 0.22 * edge * t;                           // 横向卷边法线
+      const nn = new THREE.Vector3(-dx * slope + px * curl, 1, -dz * slope + pz * curl).normalize();
       return { p: [dx * rr + px * across, y, dz * rr + pz * across], n: [nn.x, nn.y, nn.z] };
     }, 1);
   }
-  // 花心：低矮的圆顶
-  const rings = 3, seg = 12, R = 0.2;
-  const center = b.v([0, 0.085, 0], [0, 1, 0], [0.5, 0.5], 2);
+
+  // 内层 6 瓣：更短、更立，制造层叠厚度
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.35;
+    const dx = Math.cos(a), dz = Math.sin(a), px = -dz, pz = dx;
+    const len = 0.52 + 0.06 * Math.sin(i * 4.1), cup = 0.3;
+    b.grid(2, 4, (u, t) => {
+      const rr = r0 * 0.55 + (len - r0 * 0.55) * t;
+      const profile = 0.25 + 0.75 * Math.pow(t, 0.6);
+      const across = (u - 0.5) * 0.6 * profile;
+      const y = 0.03 + cup * t * t + 0.02 * Math.sin(u * Math.PI) * t;
+      const slope = 2 * cup * t;
+      const nn = new THREE.Vector3(-dx * slope, 1, -dz * slope).normalize();
+      return { p: [dx * rr + px * across, y, dz * rr + pz * across], n: [nn.x, nn.y, nn.z] };
+    }, 5);
+  }
+
+  // 花心：低矮圆顶（带环状隆起）+ 外圈 12 枚花药小锥
+  const rings = 3, seg = 16, R = 0.2;
+  const center = b.v([0, 0.09, 0], [0, 1, 0], [0.5, 0.5], 2);
   let prev = null;
   for (let rI = 1; rI <= rings; rI++) {
     const rr = (rI / rings) * R, ring = [];
     for (let s = 0; s < seg; s++) {
       const a = (s / seg) * Math.PI * 2;
+      const bump = 0.012 * Math.sin(a * 12 + rI * 1.7) + 0.008 * Math.sin(a * 5 + rI);
       const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
-      const y = 0.075 * (1 - (rr / R) * (rr / R)) + 0.012;
+      const y = 0.075 * (1 - (rr / R) * (rr / R)) + 0.012 + bump;
       const nn = new THREE.Vector3(x * 2, 1, z * 2).normalize();
       ring.push(b.v([x, y, z], [nn.x, nn.y, nn.z], [0.5 + x, 0.5 + z], 2));
     }
@@ -90,6 +119,18 @@ function flowerGeometry() {
       else b.idx.push(prev[s], prev[s2], ring[s], prev[s2], ring[s2], ring[s]);
     }
     prev = ring;
+  }
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 + 0.13;
+    const rr = 0.155, x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+    const y = 0.075 * (1 - (rr / R) * (rr / R)) + 0.012;
+    const tip = b.v([x * 1.18, y + 0.055, z * 1.18], [0, 1, 0], [0.5, 0.5], 2);
+    const baseRing = [];
+    for (let k = 0; k < 3; k++) {
+      const aa = a + (k / 3) * Math.PI * 2;
+      baseRing.push(b.v([x + Math.cos(aa) * 0.012, y, z + Math.sin(aa) * 0.012], [Math.cos(aa), 0.3, Math.sin(aa)], [0.5, 0.5], 2));
+    }
+    b.idx.push(baseRing[0], tip, baseRing[1], baseRing[1], tip, baseRing[2], baseRing[2], tip, baseRing[0]);
   }
   return b.build();
 }
@@ -198,13 +239,23 @@ attribute vec3 iPos;
 attribute vec4 iHead;   // 朝向 xyz, 花头半径
 attribute vec4 iData;   // 茎高, 颜色序号, 相位, 自转
 attribute float iSway;
-varying vec2 vUv; varying float vPart, vCi, vPetalId; centroid varying float vShadow;
+varying vec2 vUv, vPetalUv; varying float vPart, vCi, vPetalId, vInner, vTint; centroid varying float vShadow;
 centroid varying vec3 vN, vWorld; varying vec3 vBase, vMid, vTip; centroid varying vec4 vFog;
 varying vec4 vShadowCoord;
 void main() {
   float h = iData.x;
   vCi = iData.y;
-  vPetalId = floor(atan(position.z, position.x) / 0.785398 + 0.5) + iData.z * 13.0;
+  float innerPetal = (aPart > 4.5 && aPart < 5.5) ? 1.0 : 0.0;
+  vInner = innerPetal;
+  vTint = 0.92 + 0.16 * hash11(iData.z * 5.1 + 0.3);
+  vPetalId = floor(atan(position.z, position.x) / mix(0.785398, 1.047198, innerPetal) + 0.5) + iData.z * 13.0;
+  // 花瓣图集 2×2：每朵花随机选一个变体（其余部件仍用 uv 做渐变）
+  float isPetal = ((aPart > 0.5 && aPart < 1.5) || innerPetal > 0.5) ? 1.0 : 0.0;
+  if (isPetal > 0.5) {
+    float vid = floor(hash11(iData.z * 3.7 + 0.13) * 4.0);
+    vec2 cell = vec2(mod(vid, 2.0), floor(vid * 0.5)) * 0.5;
+    vPetalUv = cell + uv * 0.5;
+  } else { vPetalUv = uv; }
   vec2 disp = windDisp(iPos.xz, iData.z, h) * iSway;
   vec3 dv = vec3(disp.x, 0.0, disp.y);
   float drop = dot(disp, disp) / (2.0 * h);
@@ -225,17 +276,18 @@ void main() {
     float cs = cos(iData.w), sn = sin(iData.w);
     vec3 t2 = t * cs + b * sn, b2 = b * cs - t * sn;
     vec3 lp = position, nl = normal;
-    if (aPart > 0.5 && aPart < 1.5) {
+    if (isPetal > 0.5) {
       // 每朵花、每片花瓣：长短、杯状弯曲、绕中脉扭转各不相同
+      float sect = mix(0.785398, 1.047198, innerPetal);
       float ang = atan(position.z, position.x), rr = length(position.xz);
-      float pa = floor(ang / 0.785398 + 0.5) * 0.785398;
+      float pa = floor(ang / sect + 0.5) * sect;
       vec2 perp = vec2(-sin(pa), cos(pa));
       float across = dot(position.xz, perp);
-      float pi = floor(ang / 0.785398 + 0.5);
-      float twist = (hash11(pi * 3.7 + iData.z * 11.1) - 0.5) * 0.9;
+      float pi = floor(ang / sect + 0.5);
+      float twist = (hash11(pi * 3.7 + iData.z * 11.1) - 0.5) * mix(0.9, 0.45, innerPetal);
       float k = hash11(iData.z * 7.13);
       lp.xz *= 1.0 + 0.1 * sin(ang * 3.0 + iData.z * 5.0) + 0.06 * sin(ang * 5.0 + iData.w * 3.0);
-      lp.y += (k * 0.24 - 0.06) * rr * rr + twist * across * rr + 0.012 * mod(pi, 2.0);
+      lp.y += (k * 0.24 - 0.06) * rr * rr * mix(1.0, 0.8, innerPetal) + twist * across * rr + 0.012 * mod(pi, 2.0);
       nl = normalize(nl - vec3(perp.x, 0.0, perp.y) * twist * rr * 1.5);
     }
     lp *= iHead.w;
@@ -257,7 +309,7 @@ ${LIGHTING}
 ${SHADOW}
 uniform sampler2D uPetal;
 uniform float uA2C;
-varying vec2 vUv; varying float vPart, vCi, vPetalId; centroid varying float vShadow;
+varying vec2 vUv, vPetalUv; varying float vPart, vCi, vPetalId, vInner, vTint; centroid varying float vShadow;
 centroid varying vec3 vN, vWorld; varying vec3 vBase, vMid, vTip; centroid varying vec4 vFog;
 varying vec4 vShadowCoord;
 void main() {
@@ -270,31 +322,35 @@ void main() {
   vec3 col; float a = 1.0;
   if (vPart < 0.5) {               // 茎
     col = shadePlant(vec3(0.13, 0.24, 0.05), N, V, 0.85, 0.8, sunVis, 0.85, 0.08);
-  } else if (vPart < 1.5) {        // 花瓣
-    vec4 tx = texture2D(uPetal, vUv);
+  } else if (vPart < 1.5 || (vPart > 4.5 && vPart < 5.5)) {        // 花瓣（外瓣 / 内瓣）
+    float inner = vInner;
+    vec4 tx = texture2D(uPetal, vPetalUv);
     a = tx.a;
     if (uA2C > 0.5) { a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0); if (a < 0.02) discard; }
     else { if (a < 0.5) discard; a = 1.0; }
+    float thick = clamp(tx.b, 0.0, 1.0);
+    float thin = 1.0 - thick;
     vec3 alb = mix(vBase, vMid, smoothstep(0.0, 0.32, vUv.y));
     alb = mix(alb, vTip, smoothstep(0.35, 1.0, vUv.y));
     alb *= mix(0.5, 1.0, tx.r);                             // 纵向沟纹
     alb *= mix(0.7, 1.0, smoothstep(0.3, 0.8, tx.g));       // 边缘略深，单片花瓣轮廓更清楚
     alb *= 0.88 + 0.24 * hash11(vPetalId);                   // 每片花瓣明暗略有差异
-    // 花瓣很薄：逆光时透光明显，背面略暗
-    float back = gl_FrontFacing ? 1.0 : 0.85;
+    alb *= vTint * mix(1.0, 0.82, inner);                    // 每朵花色温/明度轻微不同；内瓣略暗
+    float back = gl_FrontFacing ? mix(1.0, 0.86, inner) : 0.82;
     float near = 1.0 - vFogC.a;
-    // 花瓣光照：正面漫反射 + 透光。透光受脉纹（组织厚、透光少）与上下层（下层被压住一部分）调制
     vec3 L = uLightDir;
     float diff = max(dot(N, L) * 0.5 + 0.5, 0.0);
     float layer = mod(floor(vPetalId + 0.5), 2.0) < 0.5 ? 0.72 : 1.0;
     float veinT = 0.25 + 0.75 * tx.r * tx.r;
     float edgeT = mix(1.25, 1.0, smoothstep(0.3, 0.8, tx.g));
-    float trans = pow(max(dot(-V, L), 0.0), 3.0) * veinT * edgeT * layer * near;
+    float trans = pow(max(dot(-V, L), 0.0), 3.0) * veinT * edgeT * layer * near
+      * mix(0.5, 1.1, thin) * mix(1.0, 0.55, inner);
     vec3 sun = uLightColor * sunVis * (diff * 0.8 + trans * 1.1);
-    vec3 amb = plantAmbient(N, mix(0.75, 1.0, layer));
+    vec3 amb = plantAmbient(N, mix(0.75, 1.0, layer) * mix(1.0, 0.7, inner));
     col = alb * back * (sun + amb);
-    col += uSkyAmb * alb * pow(1.0 - abs(dot(N, V)), 3.0) * 0.35;           // 掠射角的柔光
-    col += alb * plantSpecEnv(N, V, 0.35, 0.3);                              // 花瓣边缘环境反光
+    col += alb * trans * uLightColor * 0.25;                 // 透光带一点花瓣本色
+    col += uSkyAmb * alb * pow(1.0 - abs(dot(N, V)), 3.0) * 0.35;
+    col += alb * plantSpecEnv(N, V, 0.35, 0.3);
   } else if (vPart < 2.5) {        // 花心：密集的管状小花 + 突出的深色花药
     vec2 q = (vUv - 0.5) * 5.0;                // 约 ±1
     float rr = length(q);
@@ -362,10 +418,11 @@ void main() {
 }`;
 const FLOWER_SHADOW_FS = /* glsl */ `
 uniform sampler2D uPetal;
-varying vec2 vUv;
+varying vec2 vPetalUv;
 varying float vPart;
 void main() {
-  if (vPart > 0.5 && vPart < 1.5 && texture2D(uPetal, vUv).a < 0.5) discard;
+  bool petal = (vPart > 0.5 && vPart < 1.5) || (vPart > 4.5 && vPart < 5.5);
+  if (petal && texture2D(uPetal, vPetalUv).a < 0.5) discard;
   gl_FragColor = vec4(1.0);
 }`;
 function grassShadowMaterial(U, tex) {

@@ -96,7 +96,11 @@ src/main.js        App 装配、每帧管线、exportAPI
 | 1920×1080 high + M1 阴影 | 6.57 ms | 152.1 | 10,475,019 | 29 | 17 | 21 |
 | 1920×1080 high + M1 阴影 + IBL | 6.73 ms | 148.5 | 10,358,451 | 34 | 16 | 22 |
 | 1920×1080 high + M1 阴影 + IBL + AO | 6.75 ms | 148.1 | 10,358,453 | 36 | 18 | 24 |
+| 1920×1080 high + M2 花形态 | （同 GPU 负载下 11.90 vs M1 11.98 ms，无回归） | — | 12,384,413 | 36 | 18 | 24 |
 | 增量（阴影+IBL+AO 累计） | **+20.1%**（预算 阴影≤20%+IBL≤15%+AO≤15%） | | +167k | +10 | +3 | +5 |
+| M2 花形态三角形增量 | 相对 M0 **+21.5%**（10.36M→12.38M，预算 ≤30%） | | | | | |
+
+> M2 花几何改造（外瓣形态/内瓣层叠/花心几何+花药/圆柱茎/花瓣 2×2 图集/透光厚度）在同等桌面 GPU 负载下与 M1 帧时间持平（11.90 vs 11.98ms，噪声内）；M2 期间桌面 GPU 被用户环境占用 45–97%，绝对帧时间不能与 M0 空载基线直接对比，相对 A/B 为准。
 
 > M1 阴影实现：2048² depth map、正交相机覆盖相机前方约 24m、2×2 PCF、近景花/花苞子集投射（约 150k 三角）、边缘淡出；low 档关闭、medium 1024。
 > M1 IBL：sky→64² cubemap（medium 32 / ultra 128），环境光/反射接入 `shadePlant`；IBL 增量约 +0.16ms（+2.8%）。
@@ -187,6 +191,8 @@ src/main.js        App 装配、每帧管线、exportAPI
 | M1 方向光阴影（首版） | ✅ 完成 | 2026-10-18 | task-14；2048²/24m/2×2 PCF；bench 6.57ms（+17.0%）；smoke/导出通过；`capture --tag m1` |
 | M1 IBL + PBR 材质 + 调色 | ✅ 完成 | 2026-10-18 | task-15；天空 cubemap IBL（64²）、简化 GGX/环境反射、去饱和/暗角/颗粒收敛；累计 bench 6.73ms（+19.8%）；smoke/导出通过 |
 | M1 SSAO/接触阴影 | ✅ 完成 | 2026-10-18 | task-16；半分辨率 SSAO+双边模糊；草/地面接触暗部生效（AO diff 验证），花瓣层间受深度 AO 限制（留待 M2）；累计 bench 6.75ms（+20.1%）；smoke/导出通过 |
+| M2 花形态大改 | ✅ 完成 | 2026-10-18 | task-17；外瓣倒卵形/卷边、内层 6 瓣、花心环状隆起+12 花药、圆柱茎、花瓣 2×2 图集（脉纹/边缘/厚度/磨损）、透光与内瓣暗部；三角形 +21.5%（预算内），同负载帧时间与 M1 持平；`capture --tag m2` |
+| M2 草甸/地面 | 待开始 | — | task-19 |
 | M1 光影 | 待开始 | — | task-14/15/16 |
 | M2 植物 | 待开始 | — | task-17/19 |
 | M3 天空/城市 | 待开始 | — | task-18/20 |
@@ -203,6 +209,7 @@ src/main.js        App 装配、每帧管线、exportAPI
 - M1 阴影对比：`capture --tag m1` → `.review/realism/m1/`；A/B 并排与逐像素数据在 `.review/realism/compare/baseline__m1/`；bench 在 `.review/realism/bench-m1.json`
 - M1 IBL/材质/调色：同 tag `m1`（覆盖阴影版）；`bench-m1.json` 记录累计 6.73ms；IBL 增量约 +0.16ms
 - M1 AO：`capture --tag m1-ao` → `.review/realism/m1-ao/`；`bench-m1-ao.json`；`capture --compare m1 m1-ao`；AO 作用区 diff：`.review/realism/diff/golden-ao-diff10x.png`
+- M2 花形态：`capture --tag m2` → `.review/realism/m2/`（6 场景 + 花/城市 crop）；A/B：`.review/realism/diff/m1-m2-hero-ab.png`；性能对比 `bench-m1-underload.json` / `bench-m2-underload.json`（同负载，M1 11.98ms vs M2 11.90ms）
 - 已知限制：英雄花自阴影/花瓣层间暗部受 2048²、24m 覆盖范围与强景深限制；AO 对薄花瓣层间不敏感（diff 验证花瓣区域几乎不变），留待 M2 花几何（厚度/自遮挡/纹理 AO）解决；草层投射在 M1 暂关闭（避免模糊暗块），待 AO/级联方案后再评估启回。
 - 验收命令：
   ```

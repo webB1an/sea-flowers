@@ -109,7 +109,7 @@ void main() {
   vWorld = p + lp;
   int ci = int(iInfo.y + 0.5);
   vCol = mix(uPalMid[ci], uPalTip[ci], 0.5);
-  vUv = vec2(uv.x, uv.y);
+  vUv = uv * 0.5;   // 花瓣图集 2×2：飘落花瓣固定使用第 0 个变体
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }`;
 const PETAL_FS = /* glsl */ `
