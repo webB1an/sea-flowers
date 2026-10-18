@@ -1,0 +1,20 @@
+{
+  "name": "sea-flowers",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --format=iife --minify --outfile=dist/flower-sea.js",
+    "render": "node render.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.11",
+    "esbuild": "^0.28.2",
+    "puppeteer-core": "^25.13.0",
+    "three": "^0.186.1"
+  }
+}

@@ -1,0 +1,500 @@
+// 花田：草丛（实例化交叉面片）、花朵 / 花苞（实例化几何体）、地面、远处树线
+import * as THREE from 'three';
+import { COMMON, LIGHTING } from './glsl.js';
+
+const lin = (hex) => new THREE.Color(hex);
+
+// ---------------- 几何体 ----------------
+class Builder {
+  constructor() { this.pos = []; this.nrm = []; this.uv = []; this.part = []; this.idx = []; }
+  v(p, n, uv, part) {
+    this.pos.push(p[0], p[1], p[2]); this.nrm.push(n[0], n[1], n[2]); this.uv.push(uv[0], uv[1]); this.part.push(part);
+    return this.pos.length / 3 - 1;
+  }
+  grid(cols, rows, fn, part) { // fn(u, t) => { p, n }
+    const base = this.pos.length / 3;
+    for (let j = 0; j <= rows; j++) for (let k = 0; k <= cols; k++) {
+      const u = k / cols, t = j / rows; const { p, n } = fn(u, t);
+      this.v(p, n, [u, t], part);
+    }
+    for (let j = 0; j < rows; j++) for (let k = 0; k < cols; k++) {
+      const a = base + j * (cols + 1) + k, b = a + 1, c = a + cols + 1, d = c + 1;
+      this.idx.push(a, c, b, b, c, d);
+    }
+  }
+  build() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('aPart', new THREE.Float32BufferAttribute(this.part, 1));
+    g.setIndex(this.idx);
+    return g;
+  }
+}
+
+// 三片 60° 交叉的竖直面片，每片 6 段，便于弯曲
+function grassCardGeometry() {
+  const b = new Builder();
+  for (let i = 0; i < 3; i++) {
+    const a = (i * Math.PI) / 3, c = Math.cos(a), s = Math.sin(a);
+    b.grid(2, 6, (u, t) => ({ p: [(u - 0.5) * c, t, (u - 0.5) * s], n: [-s, 0, c] }), 0);
+  }
+  return b.build();
+}
+
+function stem(b) {
+  for (const [ax, az] of [[1, 0], [0, 1]]) {
+    b.grid(1, 8, (u, t) => ({ p: [(u * 2 - 1) * ax, t, (u * 2 - 1) * az], n: [az, 0, -ax] }), 0);
+  }
+}
+
+// 花头坐标系：Y 为花朝向，单位半径 1（着色器里乘以花头半径）
+function flowerGeometry() {
+  const b = new Builder();
+  stem(b);
+  const n = 8, r0 = 0.12;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + Math.sin(i * 7.3) * 0.08;
+    const dx = Math.cos(a), dz = Math.sin(a), px = -dz, pz = dx;
+    const len = 0.9 + 0.1 * Math.abs(Math.sin(i * 3.1));
+    const cup = 0.1 + 0.08 * Math.abs(Math.sin(i * 5.7));
+    const tilt = Math.sin(i * 2.3) * 0.06;
+    const w = 0.74;
+    b.grid(3, 6, (u, t) => {
+      const rr = r0 + (len - r0) * t;
+      const across = (u - 0.5) * w;
+      const y = cup * t * t + tilt * t + Math.sin(u * Math.PI) * 0.02 * t;
+      const slope = 2 * cup * t + tilt;
+      const nn = new THREE.Vector3(-dx * slope, 1, -dz * slope).normalize();
+      return { p: [dx * rr + px * across, y, dz * rr + pz * across], n: [nn.x, nn.y, nn.z] };
+    }, 1);
+  }
+  // 花心：低矮的圆顶
+  const rings = 3, seg = 12, R = 0.2;
+  const center = b.v([0, 0.085, 0], [0, 1, 0], [0.5, 0.5], 2);
+  let prev = null;
+  for (let rI = 1; rI <= rings; rI++) {
+    const rr = (rI / rings) * R, ring = [];
+    for (let s = 0; s < seg; s++) {
+      const a = (s / seg) * Math.PI * 2;
+      const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+      const y = 0.075 * (1 - (rr / R) * (rr / R)) + 0.012;
+      const nn = new THREE.Vector3(x * 2, 1, z * 2).normalize();
+      ring.push(b.v([x, y, z], [nn.x, nn.y, nn.z], [0.5 + x, 0.5 + z], 2));
+    }
+    for (let s = 0; s < seg; s++) {
+      const s2 = (s + 1) % seg;
+      if (!prev) b.idx.push(center, ring[s2], ring[s]);
+      else b.idx.push(prev[s], prev[s2], ring[s], prev[s2], ring[s2], ring[s]);
+    }
+    prev = ring;
+  }
+  return b.build();
+}
+
+function budGeometry() {
+  const b = new Builder();
+  stem(b);
+  // 花苞：竖长的椭球
+  const lat = 7, lon = 10;
+  b.grid(lon, lat, (u, t) => {
+    const th = t * Math.PI, ph = u * Math.PI * 2;
+    const x = Math.sin(th) * Math.cos(ph) * 0.42, z = Math.sin(th) * Math.sin(ph) * 0.42, y = 0.5 - Math.cos(th) * 0.55;
+    const nn = new THREE.Vector3(x / 0.42, (y - 0.5) / 0.55, z / 0.42).normalize();
+    return { p: [x, y, z], n: [nn.x, nn.y, nn.z] };
+  }, 3);
+  // 萼片
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2, dx = Math.cos(a), dz = Math.sin(a);
+    b.grid(1, 3, (u, t) => {
+      const w = (u - 0.5) * 0.22 * (1 - t);
+      return { p: [dx * (0.1 + 0.55 * t) - dz * w, 0.12 + 0.25 * t - 0.15 * t * t, dz * (0.1 + 0.55 * t) + dx * w], n: [dx * 0.3, 1, dz * 0.3] };
+    }, 4);
+  }
+  return b.build();
+}
+
+function instanced(base, attrs, count) {
+  const g = new THREE.InstancedBufferGeometry();
+  g.index = base.index;
+  for (const k of Object.keys(base.attributes)) g.setAttribute(k, base.attributes[k]);
+  for (const [k, [arr, size]] of Object.entries(attrs)) g.setAttribute(k, new THREE.InstancedBufferAttribute(arr, size));
+  g.instanceCount = count;
+  return g;
+}
+
+// ---------------- 着色器 ----------------
+const GRASS_VS = /* glsl */ `
+${COMMON}
+attribute vec3 iPos;
+attribute vec4 iData;   // 宽, 高, 朝向, 图集变体
+attribute vec2 iData2;  // 色调, 相位
+varying vec2 vUv; centroid varying float vS, vTint, vShadow, vGust;
+centroid varying vec3 vN, vWorld; centroid varying vec4 vFog;
+void main() {
+  float s = position.y;
+  float cy = cos(iData.z), sy = sin(iData.z);
+  vec3 lp = vec3(position.x * iData.x, position.y * iData.y, position.z * iData.x);
+  lp = vec3(cy * lp.x - sy * lp.z, lp.y, sy * lp.x + cy * lp.z);
+  vec2 disp = windDisp(iPos.xz, iData2.y, iData.y);
+  float bend = pow(s, 1.6);
+  lp.xz += disp * bend;
+  lp.y -= dot(disp, disp) / (2.0 * iData.y) * bend * bend;
+  vec3 wp = iPos + lp;
+  vec3 nr = vec3(cy * normal.x - sy * normal.z, 0.0, sy * normal.x + cy * normal.z);
+  vec3 sph = normalize(vec3(lp.x, (s - 0.3) * iData.y, lp.z) + vec3(0.0, 0.001, 0.0));
+  vN = normalize(mix(nr, sph, 0.65));
+  vUv = vec2((uv.x + iData.w) / 4.0, uv.y);
+  vS = s; vTint = iData2.x; vWorld = wp;
+  vShadow = cloudShadowAt(wp);
+  vGust = gust(iPos.xz);
+  vFog = fogAt(wp);
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}`;
+
+const GRASS_FS = /* glsl */ `
+${COMMON}
+${LIGHTING}
+uniform sampler2D uAtlas;
+uniform vec3 uDark, uLight;
+uniform float uA2C;
+varying vec2 vUv; centroid varying float vS, vTint, vShadow, vGust;
+centroid varying vec3 vN, vWorld; centroid varying vec4 vFog;
+void main() {
+  vec4 tx = texture2D(uAtlas, vUv);
+  float a = tx.a;
+  vec2 g = vUv * vec2(2048.0, 512.0);
+  float lod = log2(max(length(dFdx(g)), length(dFdy(g))));
+  a *= 1.0 + max(lod, 0.0) * 0.3;    // 远处 mip 平均后覆盖率下降，按 mip 级别补偿
+  if (uA2C > 0.5) { a = clamp((a - 0.42) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0); if (a < 0.02) discard; }
+  else { if (a < 0.45) discard; a = 1.0; }
+  // MSAA 下极细三角形的插值可能外推，统一钳制
+  float S = clamp(vS, 0.0, 1.0), sh = clamp(vShadow, 0.0, 1.0);
+  vec4 fog = clamp(vFog, 0.0, 8.0); fog.a = min(fog.a, 1.0);
+  float L = tx.r;
+  vec3 albedo = mix(uDark, uLight, clamp(L * 0.9 + vTint * 0.4 - 0.2 + vGust * 0.06, 0.0, 1.0));
+  albedo *= mix(1.0, 0.78, uWet);
+  float ao = mix(0.18, 1.0, smoothstep(0.05, 0.95, S));
+  vec3 V = normalize(cameraPosition - vWorld);
+  vec3 n0 = normalize(vN + vec3(0.0, 1e-4, 0.0));
+  vec3 N = gl_FrontFacing ? n0 : vec3(-n0.x, n0.y, -n0.z);
+  vec3 col = shadePlant(albedo, N, V, ao, 0.55 * S * S, sh);   // 叶尖逆光透亮
+  col = mix(col, fog.rgb, fog.a);
+  gl_FragColor = vec4(col, a);
+}`;
+
+const FLOWER_VS = /* glsl */ `
+${COMMON}
+uniform vec3 uPalBase[4], uPalMid[4], uPalTip[4];
+attribute float aPart;
+attribute vec3 iPos;
+attribute vec4 iHead;   // 朝向 xyz, 花头半径
+attribute vec4 iData;   // 茎高, 颜色序号, 相位, 自转
+attribute float iSway;
+varying vec2 vUv; varying float vPart, vCi, vPetalId; centroid varying float vShadow;
+centroid varying vec3 vN, vWorld; varying vec3 vBase, vMid, vTip; centroid varying vec4 vFog;
+void main() {
+  float h = iData.x;
+  vCi = iData.y;
+  vPetalId = floor(atan(position.z, position.x) / 0.785398 + 0.5) + iData.z * 13.0;
+  vec2 disp = windDisp(iPos.xz, iData.z, h) * iSway;
+  vec3 dv = vec3(disp.x, 0.0, disp.y);
+  float drop = dot(disp, disp) / (2.0 * h);
+  vec3 wp, N;
+  if (aPart < 0.5) {
+    float s = position.y;
+    vec3 c = iPos + vec3(0.0, s * h, 0.0) + dv * s * s;
+    c.y -= drop * s * s;
+    float w = (0.0012 + iHead.w * 0.022) * mix(1.0, 0.7, s);
+    wp = c + vec3(position.x, 0.0, position.z) * w;
+    N = normalize(vec3(normal.x, 0.25, normal.z));
+  } else {
+    vec3 top = iPos + vec3(0.0, h, 0.0) + dv; top.y -= drop;
+    vec3 f = normalize(iHead.xyz + dv * 2.2 / h);
+    f = normalize(f + 0.06 * sin(uFlutterCyc.x * uPhase + iData.z * 2.3) * vec3(WIND_DIR.x, 0.0, WIND_DIR.y));
+    vec3 t = normalize(cross(abs(f.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), f));
+    vec3 b = cross(f, t);
+    float cs = cos(iData.w), sn = sin(iData.w);
+    vec3 t2 = t * cs + b * sn, b2 = b * cs - t * sn;
+    vec3 lp = position, nl = normal;
+    if (aPart > 0.5 && aPart < 1.5) {
+      // 每朵花、每片花瓣：长短、杯状弯曲、绕中脉扭转各不相同
+      float ang = atan(position.z, position.x), rr = length(position.xz);
+      float pa = floor(ang / 0.785398 + 0.5) * 0.785398;
+      vec2 perp = vec2(-sin(pa), cos(pa));
+      float across = dot(position.xz, perp);
+      float pi = floor(ang / 0.785398 + 0.5);
+      float twist = (hash11(pi * 3.7 + iData.z * 11.1) - 0.5) * 0.9;
+      float k = hash11(iData.z * 7.13);
+      lp.xz *= 1.0 + 0.1 * sin(ang * 3.0 + iData.z * 5.0) + 0.06 * sin(ang * 5.0 + iData.w * 3.0);
+      lp.y += (k * 0.24 - 0.06) * rr * rr + twist * across * rr + 0.012 * mod(pi, 2.0);
+      nl = normalize(nl - vec3(perp.x, 0.0, perp.y) * twist * rr * 1.5);
+    }
+    lp *= iHead.w;
+    wp = top + t2 * lp.x + f * lp.y + b2 * lp.z;
+    N = normalize(t2 * nl.x + f * nl.y + b2 * nl.z);
+  }
+  int ci = int(iData.y + 0.5);
+  vBase = uPalBase[ci]; vMid = uPalMid[ci]; vTip = uPalTip[ci];
+  vUv = uv; vPart = aPart; vN = N; vWorld = wp;
+  vShadow = cloudShadowAt(wp);
+  vFog = fogAt(wp);
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}`;
+
+const FLOWER_FS = /* glsl */ `
+${COMMON}
+${LIGHTING}
+uniform sampler2D uPetal;
+uniform float uA2C;
+varying vec2 vUv; varying float vPart, vCi, vPetalId; centroid varying float vShadow;
+centroid varying vec3 vN, vWorld; varying vec3 vBase, vMid, vTip; centroid varying vec4 vFog;
+void main() {
+  vec3 V = normalize(cameraPosition - vWorld);
+  vec3 n0 = normalize(vN + vec3(0.0, 1e-4, 0.0));
+  vec3 N = gl_FrontFacing ? n0 : -n0;
+  float vShadowC = clamp(vShadow, 0.0, 1.0);
+  vec4 vFogC = clamp(vFog, 0.0, 8.0); vFogC.a = min(vFogC.a, 1.0);
+  vec3 col; float a = 1.0;
+  if (vPart < 0.5) {               // 茎
+    col = shadePlant(vec3(0.13, 0.24, 0.05), N, V, 0.85, 0.8, vShadowC);
+  } else if (vPart < 1.5) {        // 花瓣
+    vec4 tx = texture2D(uPetal, vUv);
+    a = tx.a;
+    if (uA2C > 0.5) { a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0); if (a < 0.02) discard; }
+    else { if (a < 0.5) discard; a = 1.0; }
+    vec3 alb = mix(vBase, vMid, smoothstep(0.0, 0.32, vUv.y));
+    alb = mix(alb, vTip, smoothstep(0.35, 1.0, vUv.y));
+    alb *= mix(0.5, 1.0, tx.r);                             // 纵向沟纹
+    alb *= mix(0.7, 1.0, smoothstep(0.3, 0.8, tx.g));       // 边缘略深，单片花瓣轮廓更清楚
+    alb *= 0.88 + 0.24 * hash11(vPetalId);                   // 每片花瓣明暗略有差异
+    // 花瓣很薄：逆光时透光明显，背面略暗
+    float back = gl_FrontFacing ? 1.0 : 0.85;
+    float near = 1.0 - vFogC.a;
+    // 花瓣光照：正面漫反射 + 透光。透光受脉纹（组织厚、透光少）与上下层（下层被压住一部分）调制
+    vec3 L = uLightDir;
+    float diff = max(dot(N, L) * 0.5 + 0.5, 0.0);
+    float layer = mod(floor(vPetalId + 0.5), 2.0) < 0.5 ? 0.72 : 1.0;
+    float veinT = 0.25 + 0.75 * tx.r * tx.r;
+    float edgeT = mix(1.25, 1.0, smoothstep(0.3, 0.8, tx.g));
+    float trans = pow(max(dot(-V, L), 0.0), 3.0) * veinT * edgeT * layer * near;
+    vec3 sun = uLightColor * vShadowC * (diff * 0.8 + trans * 1.1);
+    vec3 amb = mix(uGroundAmb, uSkyAmb, N.y * 0.5 + 0.5) * mix(0.75, 1.0, layer);
+    col = alb * back * (sun + amb);
+    col += uSkyAmb * alb * pow(1.0 - abs(dot(N, V)), 3.0) * 0.35;           // 掠射角的柔光
+  } else if (vPart < 2.5) {        // 花心：密集的管状小花 + 突出的深色花药
+    vec2 q = (vUv - 0.5) * 5.0;                // 约 ±1
+    float rr = length(q);
+    float cells = vnoise(vUv * 95.0), cells2 = vnoise(vUv * 160.0 + 7.0);
+    vec3 alb = mix(vec3(0.42, 0.2, 0.01), vec3(0.72, 0.48, 0.03), smoothstep(0.35, 0.75, cells));
+    alb = mix(alb, vec3(0.62, 0.62, 0.08), smoothstep(0.35, 0.0, rr) * 0.5);   // 中心未开的小花偏绿
+    float anther = smoothstep(0.72, 0.9, cells2) * smoothstep(0.25, 0.6, rr);
+    alb = mix(alb, vec3(0.05, 0.03, 0.01), anther);
+    alb *= mix(0.6, 1.0, smoothstep(1.05, 0.7, rr));                            // 边缘阴影
+    col = shadePlant(alb, N, V, 0.85, 0.15, vShadowC);
+  } else if (vPart < 3.5) {        // 花苞
+    int bi = int(vCi + 0.5);
+    vec3 lo = bi == 0 ? vec3(0.28, 0.01, 0.06) : (bi == 1 ? vec3(0.12, 0.22, 0.05) : vec3(0.72, 0.42, 0.36));
+    vec3 hi = bi == 0 ? vec3(0.62, 0.06, 0.2) : (bi == 1 ? vec3(0.5, 0.62, 0.22) : vec3(0.98, 0.85, 0.76));
+    col = shadePlant(mix(lo, hi, smoothstep(0.1, 0.95, vUv.y)), N, V, 0.9, 0.25 * (1.0 - vFogC.a), vShadowC);
+  } else {                         // 萼片
+    col = shadePlant(vec3(0.12, 0.25, 0.06), N, V, 0.85, 0.5, vShadowC);
+  }
+  col = min(col, vec3(8.0));
+  col = mix(col, vFogC.rgb, vFogC.a);
+  gl_FragColor = vec4(col, a);
+}`;
+
+const GROUND_VS = /* glsl */ `
+${COMMON}
+varying vec3 vWorld;
+void main() { vWorld = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0); }`;
+const GROUND_FS = /* glsl */ `
+${COMMON}
+${LIGHTING}
+varying vec3 vWorld;
+void main() {
+  float n = fbm3(vWorld.xz * 0.35) * 0.6 + fbm3(vWorld.xz * 0.02) * 0.4;
+  vec3 alb = mix(vec3(0.035, 0.07, 0.02), vec3(0.07, 0.11, 0.035), n);
+  alb *= mix(1.0, 0.7, uWet);
+  vec3 V = normalize(cameraPosition - vWorld);
+  vec3 col = shadePlant(alb, vec3(0.0, 1.0, 0.0), V, 0.45, 0.0, cloudShadowAt(vWorld));
+  vec4 f = fogAt(vWorld);
+  gl_FragColor = vec4(mix(col, f.rgb, f.a), 1.0);
+}`;
+
+function grassMaterial(U, tex, a2c, dark, light) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...U, uAtlas: { value: tex.atlas }, uDark: { value: lin(dark) }, uLight: { value: lin(light) }, uA2C: { value: a2c ? 1 : 0 } },
+    vertexShader: GRASS_VS, fragmentShader: GRASS_FS, side: THREE.DoubleSide, alphaToCoverage: a2c,
+  });
+}
+
+// ---------------- 布局 ----------------
+// 在镜头视野扇区内撒点：半径均匀分布（远处每平方米更稀，但屏幕上刚好铺满），
+// 近处再按 r / ramp 降低密度，避免镜头前过度堆叠
+function sector(rng, rMin, rMax, halfAngle, ramp = 0) {
+  let r;
+  do { r = rMin + (rMax - rMin) * rng(); } while (ramp > 0 && rng() > Math.min(1, r / ramp));
+  const marg = Math.atan(0.5 / Math.max(r, 0.05));
+  const th = (rng() * 2 - 1) * (halfAngle + 0.1 + marg);
+  return { r, th, x: Math.sin(th) * r, z: -Math.cos(th) * r };
+}
+
+const HERO_SPECS = [
+  // 屏幕坐标 sx, sy（0–1，左上为原点），R 为花头半径占屏高比例，d 为水平距离（米）
+  { col: 3, sx: 0.805, sy: 0.585, R: 0.072, d: 1.0, turn: -0.35, up: 0.55, spin: 0.7 },
+  { col: 2, sx: 0.70, sy: 0.50, R: 0.098, d: 0.86, turn: 0.15, up: 0.35, spin: 0.2 },
+  { col: 1, sx: 0.585, sy: 0.655, R: 0.055, d: 1.12, turn: 0.25, up: 0.45, spin: 1.3 },
+];
+const HERO_BUDS = [
+  { type: 0, sx: 0.758, sy: 0.455, R: 0.026, d: 0.95 },
+  { type: 1, sx: 0.645, sy: 0.735, R: 0.02, d: 1.05 },
+  { type: 2, sx: 0.862, sy: 0.705, R: 0.022, d: 1.0 },
+];
+
+function screenToWorld(camera, sx, sy, d) {
+  const v = new THREE.Vector3(sx * 2 - 1, 1 - sy * 2, 0.5).unproject(camera).sub(camera.position).normalize();
+  const k = d / Math.max(0.05, -v.z);
+  return { p: camera.position.clone().addScaledVector(v, k), dist: k };
+}
+
+export function createField({ U, tex, cfg, q, rng, camera, aspect }) {
+  const group = new THREE.Group();
+  const a2c = q.samples > 0;
+  const halfH = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * aspect);
+  const tanHalfV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+
+  // ---- 前景大花（先算出来，好让近处草丛避开它们）----
+  const heroes = [], heroBoxes = [];
+  if (cfg.heroes) {
+    for (const s of HERO_SPECS) {
+      const { p, dist } = screenToWorld(camera, s.sx, s.sy, s.d);
+      const R = s.R * 2 * tanHalfV * dist * cfg.heroSize;
+      const toCam = camera.position.clone().sub(p).setY(0).normalize();
+      const side = new THREE.Vector3(-toCam.z, 0, toCam.x);
+      const facing = toCam.clone().addScaledVector(side, s.turn).add(new THREE.Vector3(0, s.up, 0)).normalize();
+      heroes.push({ base: new THREE.Vector3(p.x - 0.015, 0, p.z + 0.02), h: p.y, facing, R, col: s.col, spin: s.spin });
+      heroBoxes.push({ sx: s.sx, sy: s.sy, r: s.R * cfg.heroSize * 1.6, d: s.d });
+    }
+    for (const s of HERO_BUDS) {
+      const { p, dist } = screenToWorld(camera, s.sx, s.sy, s.d);
+      heroes.push({ bud: true, base: new THREE.Vector3(p.x, 0, p.z + 0.01), h: p.y, facing: new THREE.Vector3(0.1, 1, 0.25).normalize(), R: s.R * 2 * tanHalfV * dist * cfg.heroSize, type: s.type });
+    }
+  }
+  const tmp = new THREE.Vector3();
+  // 草丛顶端若会挡住某朵大花，返回 true
+  const blocksHero = (x, y, z, r) => {
+    for (const b of heroBoxes) {
+      if (r > b.d + 0.05) continue;
+      tmp.set(x, y, z).project(camera);
+      const sx = tmp.x * 0.5 + 0.5, sy = 0.5 - tmp.y * 0.5;
+      if (Math.abs(sx - b.sx) * aspect < b.r + 0.1 && sy < b.sy + b.r * 0.8) return true;
+    }
+    return false;
+  };
+
+  // ---- 草丛 ----
+  const nG = Math.round(q.grass * Math.max(0.2, cfg.grassDensity));
+  const gPos = new Float32Array(nG * 3), gD = new Float32Array(nG * 4), gD2 = new Float32Array(nG * 2);
+  let ng = 0;
+  for (let i = 0; i < nG * 1.2 && ng < nG; i++) {
+    const s = sector(rng, 0.75, 230, halfH, 14);
+    let h = 0.5 + rng() * 0.45;
+    if (s.r < 2) h = Math.min(h, 0.5 + 0.15 * s.r); // 近处草丛低于视线，不遮挡画面
+    if (s.r > 60) h *= 1 + (s.r - 60) / 150;
+    for (let k = 0; k < 4 && blocksHero(s.x, h, s.z, s.r); k++) h *= 0.72;
+    if (blocksHero(s.x, h, s.z, s.r)) continue;
+    gPos.set([s.x, 0, s.z], ng * 3);
+    gD.set([h * (0.75 + rng() * 0.35), h, rng() * Math.PI * 2, Math.floor(rng() * 4)], ng * 4);
+    const n = Math.sin(s.x * 0.21 + Math.cos(s.z * 0.13) * 2.0) * 0.5 + 0.5;
+    gD2.set([n * 0.6 + rng() * 0.5, rng() * Math.PI * 2], ng * 2);
+    ng++;
+  }
+  const grass = new THREE.Mesh(
+    instanced(grassCardGeometry(), { iPos: [gPos, 3], iData: [gD, 4], iData2: [gD2, 2] }, ng),
+    grassMaterial(U, tex, a2c, '#11240a', '#4c7524'),
+  );
+  grass.frustumCulled = false;
+  group.add(grass);
+
+  // ---- 花朵与花苞 ----
+  const weights = ['white', 'pink', 'magenta', 'crimson'].map((k) => Math.max(0, +cfg.colorWeights[k] || 0));
+  const wSum = weights.reduce((a, b) => a + b, 0);
+  const pickCol = () => {
+    if (wSum <= 0) return 0;
+    let x = rng() * wSum;
+    for (let i = 0; i < 4; i++) { if ((x -= weights[i]) <= 0 && weights[i] > 0) return i; }
+    return weights.findLastIndex((w) => w > 0);
+  };
+  const nF = Math.round(9500 * cfg.flowerDensity * q.flowers);
+  const nB = Math.round(nF * 0.35);
+  const fl = { pos: [], head: [], data: [], sway: [] };
+  const bd = { pos: [], head: [], data: [], sway: [] };
+  const push = (o, p, head, data, sway) => { o.pos.push(...p); o.head.push(...head); o.data.push(...data); o.sway.push(sway); };
+  const facingFor = (x, z, upK) => {
+    const tc = new THREE.Vector3(-x, 0, -z).normalize();
+    const side = new THREE.Vector3(-tc.z, 0, tc.x);
+    return tc.multiplyScalar(0.15 + rng() * 0.75).addScaledVector(side, (rng() - 0.5) * 1.1).add(new THREE.Vector3(0, upK, 0)).normalize();
+  };
+  for (let i = 0; i < nF * 1.3 && fl.sway.length < nF; i++) {
+    const near = rng() < 0.003;
+    const s = near ? sector(rng, 0.5, 1.0, halfH) : sector(rng, 2.0, 170, halfH, 12);
+    const h = 0.6 + rng() * 0.38;
+    if (blocksHero(s.x, h, s.z, s.r)) continue;
+    let R = (0.03 + rng() * 0.016) * cfg.flowerSize;
+    if (s.r > 35) R *= 1 + (s.r - 35) / 60;
+    push(fl, [s.x, 0, s.z], [...facingFor(s.x, s.z, 1.2 + rng() * 1.8).toArray(), R], [h, pickCol(), rng() * 6.283, rng() * 6.283], 1);
+  }
+  for (let i = 0; i < nB; i++) {
+    const s = sector(rng, 2.0, 90, halfH, 18);
+    const h = 0.55 + rng() * 0.38;
+    if (blocksHero(s.x, h, s.z, s.r)) continue;
+    const R = (0.012 + rng() * 0.008) * cfg.flowerSize * (s.r > 35 ? 1 + (s.r - 35) / 60 : 1);
+    push(bd, [s.x, 0, s.z], [...facingFor(s.x, s.z, 1.6).toArray(), R], [h, rng() < 0.45 ? 0 : (rng() < 0.8 ? 1 : 2), rng() * 6.283, rng() * 6.283], 1);
+  }
+  for (const hr of heroes) {
+    if (hr.bud) push(bd, hr.base.toArray(), [...hr.facing.toArray(), hr.R], [hr.h, hr.type, rng() * 6.283, 0], 0.22);
+    else push(fl, hr.base.toArray(), [...hr.facing.toArray(), hr.R], [hr.h, hr.col, rng() * 6.283, hr.spin], 0.22);
+  }
+  const fMat = new THREE.ShaderMaterial({
+    uniforms: { ...U, uPetal: { value: tex.petal }, uA2C: { value: a2c ? 1 : 0 } },
+    vertexShader: FLOWER_VS, fragmentShader: FLOWER_FS, side: THREE.DoubleSide, alphaToCoverage: a2c,
+  });
+  for (const [o, geo] of [[fl, flowerGeometry()], [bd, budGeometry()]]) {
+    const n = o.sway.length;
+    if (!n) continue;
+    const m = new THREE.Mesh(instanced(geo, {
+      iPos: [new Float32Array(o.pos), 3], iHead: [new Float32Array(o.head), 4],
+      iData: [new Float32Array(o.data), 4], iSway: [new Float32Array(o.sway), 1],
+    }, n), fMat);
+    m.frustumCulled = false;
+    group.add(m);
+  }
+
+  // ---- 地面 ----
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000).rotateX(-Math.PI / 2),
+    new THREE.ShaderMaterial({ uniforms: { ...U }, vertexShader: GROUND_VS, fragmentShader: GROUND_FS }));
+  ground.frustumCulled = false;
+  group.add(ground);
+
+  // ---- 远处树线 / 芦苇带 ----
+  const nT = q.treeline;
+  const tPos = new Float32Array(nT * 3), tD = new Float32Array(nT * 4), tD2 = new Float32Array(nT * 2);
+  for (let i = 0; i < nT; i++) {
+    const th = (rng() * 2 - 1) * (halfH + 0.25);
+    const r = 260 + rng() * 260;
+    const cluster = Math.pow(Math.sin(th * 9.0 + 1.3) * 0.5 + 0.5, 1.5) * 0.7 + Math.pow(Math.sin(th * 23.0) * 0.5 + 0.5, 3.0) * 0.5;
+    const h = 3 + rng() * 5 + cluster * 14;
+    tPos.set([Math.sin(th) * r, -0.5, -Math.cos(th) * r], i * 3);
+    tD.set([h * (1.0 + rng() * 0.6), h, rng() * 6.283, Math.floor(rng() * 4)], i * 4);
+    tD2.set([rng() * 0.5, rng() * 6.283], i * 2);
+  }
+  const tree = new THREE.Mesh(instanced(grassCardGeometry(), { iPos: [tPos, 3], iData: [tD, 4], iData2: [tD2, 2] }, nT),
+    grassMaterial(U, tex, a2c, '#0f1c0c', '#33482a'));
+  tree.frustumCulled = false;
+  group.add(tree);
+
+  return { group, counts: { grass: ng, flowers: fl.sway.length, buds: bd.sway.length } };
+}

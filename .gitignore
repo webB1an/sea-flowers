@@ -1,0 +1,10 @@
+# dependencies
+node_modules/
+
+# large rendered videos (individual files exceed GitHub's 100 MB limit)
+videos/
+
+# logs / OS junk
+*.log
+.DS_Store
+Thumbs.db

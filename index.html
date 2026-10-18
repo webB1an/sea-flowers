@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>波斯菊花海 · 3D 动态壁纸</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #gear {
+    position: fixed; right: 18px; bottom: 18px; width: 44px; height: 44px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.45); background: rgba(30,45,30,.35); color: #fff; font-size: 22px;
+    backdrop-filter: blur(8px); cursor: pointer; opacity: 0; transition: opacity .4s; z-index: 10;
+  }
+  #gear.show, #gear:hover { opacity: 1; }
+  #panel {
+    position: fixed; top: 12px; right: 12px; bottom: 12px; width: 340px; overflow-y: auto; z-index: 11;
+    background: rgba(250,250,247,.84); backdrop-filter: blur(14px); border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.25); color: #2b3328; font-size: 13px;
+    transform: translateX(370px); transition: transform .3s ease; padding: 0 16px 16px;
+  }
+  #panel.open { transform: none; }
+  #panel header {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 14px 0 10px; background: linear-gradient(rgba(250,250,247,.97) 75%, rgba(250,250,247,0));
+  }
+  #panel h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+  #status { flex: 1; color: #8a5a6e; font-size: 12px; text-align: right; }
+  #panel h2 { font-size: 12px; letter-spacing: .1em; color: #6b7a62; margin: 16px 0 6px; font-weight: 600; }
+  .row { display: grid; grid-template-columns: 78px 1fr 50px; align-items: center; gap: 8px; margin: 7px 0; transition: opacity .2s; }
+  .row label { color: #3d4a37; }
+  .row .val { text-align: right; font-variant-numeric: tabular-nums; color: #6b7a62; }
+  .row.check { grid-template-columns: 1fr auto; }
+  .row.color { grid-template-columns: 54px 34px 1fr 38px; }
+  input[type=range] { width: 100%; accent-color: #c2185b; }
+  input[type=color] { width: 30px; height: 24px; border: none; padding: 0; background: none; cursor: pointer; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: #c2185b; }
+  select, input[type=number] { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid #cfd6c8; border-radius: 6px; background: #fff; font: inherit; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  button.b { padding: 7px 8px; border: 1px solid #cfd6c8; border-radius: 8px; background: #fff; cursor: pointer; font: inherit; color: #2b3328; }
+  button.b:hover { background: #f3f6ef; }
+  button.b.primary { background: #c2185b; border-color: #c2185b; color: #fff; }
+  button.icon { border: none; background: none; font-size: 18px; cursor: pointer; color: #556; padding: 2px 6px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .presets button { padding: 4px 10px; border-radius: 999px; border: 1px solid #e0b5c8; background: #fff6fa; cursor: pointer; font: inherit; font-size: 12px; color: #9c1650; }
+  .presets button:hover { background: #fde4ef; }
+  .hint { color: #7d8a75; font-size: 11.5px; line-height: 1.5; margin: 6px 0; }
+  code.cmd { display: block; padding: 7px 8px; background: #263023; color: #d9f0c8; border-radius: 6px; font-size: 11.5px; word-break: break-all; margin-top: 6px; }
+  #toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: rgba(20,30,20,.7); color: #fff; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 12; }
+  #toast.show { opacity: 1; }
+  #fps { position: fixed; left: 10px; top: 8px; color: #fff; font: 12px monospace; text-shadow: 0 1px 2px #000; display: none; z-index: 9; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="fps"></div>
+<button id="gear" title="设置 (S)">⚙</button>
+<aside id="panel">
+  <header><h1>🌸 花海设置</h1><span id="status"></span><button class="icon" id="close" title="关闭 (S / Esc)">✕</button></header>
+  <h2>预设</h2>
+  <div class="presets" id="presets"></div>
+  <div id="controls"></div>
+  <h2>导出视频</h2>
+  <div class="row"><label>分辨率</label>
+    <select id="exportRes" style="grid-column: span 2">
+      <option value="1920x1080">1920 × 1080</option>
+      <option value="2560x1440">2560 × 1440</option>
+      <option value="3840x2160">3840 × 2160 (4K)</option>
+      <option value="screen">与当前屏幕一致</option>
+    </select></div>
+  <div class="row"><label>帧率</label>
+    <select id="exportFps" style="grid-column: span 2">
+      <option value="30">30 fps</option><option value="60">60 fps</option><option value="24">24 fps</option>
+    </select></div>
+  <div class="hint">视频需要固定的时间和天气：若当前是"跟随电脑时间"或"自动天气"，导出时会取此刻的时间与天气。导出后在项目目录运行：</div>
+  <code class="cmd">node render.js --config flower-sea.config.json</code>
+  <div class="btns">
+    <button class="b primary" id="export">导出配置</button>
+    <button class="b" id="import">导入配置</button>
+    <button class="b" id="reset">恢复默认</button>
+    <button class="b" id="hide">隐藏面板</button>
+  </div>
+  <div class="hint">快捷键：S 打开/关闭面板。网址加 <b>?ui=0</b> 可隐藏设置按钮（适合作为桌面壁纸）。设置自动保存在本机浏览器中。</div>
+  <input type="file" id="file" accept=".json,application/json" hidden>
+</aside>
+<div id="toast"></div>
+<script src="dist/flower-sea.js"></script>
+</body>
+</html>
